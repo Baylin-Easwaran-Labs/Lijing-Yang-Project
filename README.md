@@ -3,6 +3,7 @@ Please edit the file paths as required.
 
 The overall pipeline and the files used for the analyses are shown in AnalysesOverview.tiff
 
+The accession number in GEO database for the RNAs-seq data reported in this paper is GSE218480, Chip-seq data is GSE218479.
 
 RNA-seq analyses
 1) The file Salmon_alignment.sh has codes for aligning the RNA-seq data.
@@ -17,6 +18,6 @@ ChIP-seq analyses
 2) Differential peak analyses is performed using DiffBind_Analyses.R
 3) Analyses of the peak calls is done using run_Peak_Calls_Analysis.R which executes Peak_Calls_Analysis.Rmd
 4) The file Peak_Calls_Analysis_062922.html contains the R Markdown output of Peak_Calls_Analysis.Rmd.
-5) Peak_Calls_Analysis.RData contains all R objects from running Peak_Calls_Analysis.Rmd. This file can be sued for further analyses of the ChIP-seq data.
+5) Peak_Calls_Analysis.RData contains all R objects from running Peak_Calls_Analysis.Rmd. This file can be used for further analyses of the ChIP-seq data.
 
 The Folder FigureCodes contains the codes for reproducing the figures.
