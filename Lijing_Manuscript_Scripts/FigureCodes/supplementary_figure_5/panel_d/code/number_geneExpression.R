@@ -1,0 +1,79 @@
+wd='C:/Users/86137/OneDrive/Desktop/nature_genetics/supplemental figures/sup_figure_5/panel_d'
+setwd(wd)
+getwd()
+list.files()
+
+temp=list.files(wd,pattern="*.txt")
+temp
+length(temp)
+
+data_1=list()
+for(i in 1:length(temp)){
+  data_1[[i]]=read.table(temp[i],header=T,sep='',na.strings = c("NA"))
+}
+
+
+sta=data.frame(rep(c(1:8),2),rep(NA,16))
+sta
+names(sta)=c('label','number')
+
+for(i in 1:length(data_1)){
+  data=data_1[[i]]
+  up=data[which(data$log2FoldChange >=1 & data$padj < 0.05),]
+  down=data[which(data$log2FoldChange <= -1 & data$padj < 0.05),]
+  
+  sta$number[i]=nrow(up)
+  sta$number[i+8]=-nrow(down)
+  
+}
+
+sta$label_1=c(rep(temp,2))
+sta
+sta$change[1:8]=c('up')
+sta$change[9:16]=c('down')
+
+library(stringr)
+sta$label_1=substr(sta$label_1,1,nchar(sta$label_1)-7)
+sta$label_1=substr(sta$label_1,14,nchar(sta$label_1))
+sta$label_1
+
+sta$label_2=substr(sta$label_1,1,nchar(sta$label_1)-3)
+sta$label_2
+
+sta$label_3=substr(sta$label_1,nchar(sta$label_1)-1,nchar(sta$label_1))
+sta$label_3
+
+sta
+unique(sta$label_2)
+
+for(i in 1:nrow(sta)){
+  if(sta$label_2[i] == 'Dist.Cdx2KOVsWT'){sta$label_4[i]= 'Dist_Cdx2KO-Vs-WT'}
+  if(sta$label_2[i] == 'Prox.Cdx2KOVsWT'){sta$label_4[i]= 'Prox_Cdx2KO-Vs-WT'}
+  if(sta$label_2[i] == 'ProxVsDist'){sta$label_4[i]= 'Prox-Vs-Dist'}
+  if(sta$label_2[i] == 'ProxVsDist_Cdx2KO'){sta$label_4[i]= 'Cdx2KO_Prox-Vs_Dist'}
+}
+
+
+for(i in 1:nrow(sta)){
+  if(sta$label_3[i] == 'BM'){sta$label_5[i]= 'base'}
+  if(sta$label_3[i] == 'FM'){sta$label_5[i]= 'full'}
+}
+
+
+sta$label_6=str_c(sta$change,'+',sta$label_5)
+
+sta$label_4=factor(sta$label_4,levels=c('Prox-Vs-Dist','Prox_Cdx2KO-Vs-WT','Dist_Cdx2KO-Vs-WT','Cdx2KO_Prox-Vs_Dist'))
+
+library(ggplot2)
+figure=ggplot(sta, aes(x = label_4, y = number, fill = label_6)) +
+  geom_bar(stat = "identity",width = 0.9, position = position_dodge(0.9))+
+  geom_text(aes(x=label_4,y=number+100*number/abs(number),label=abs(number)),position=position_dodge(width=0.9),color='black')+
+  ggtitle('number_geneExpression')+
+  scale_fill_discrete(name='factor_1')+
+    theme_bw()  
+
+figure
+
+pdf('number_geneExpression.pdf',10,6)
+print(figure)
+dev.off() 
