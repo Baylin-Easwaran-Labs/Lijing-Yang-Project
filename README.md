@@ -1,7 +1,7 @@
 # Lijing-Yang-Project
 Please edit the file paths as required.
 
-The overall pipeline and the files used for the analyses are shown in AnalysesOverview.tiff
+The overall pipeline and the files used for the analyses are shown in AnalysesOverview.jpg
 
 The accession number in GEO database for the RNAs-seq data reported in this paper is GSE218480, Chip-seq data is GSE218479.
 
