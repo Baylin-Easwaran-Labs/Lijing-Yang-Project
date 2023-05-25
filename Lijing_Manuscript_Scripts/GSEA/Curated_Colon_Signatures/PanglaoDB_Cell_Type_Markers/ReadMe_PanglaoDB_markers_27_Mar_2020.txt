@@ -1,0 +1,1 @@
+Go to panglaoDB website and select Datasets and select Cell type markers, and download the tsv file that contains markers data for all cell types.

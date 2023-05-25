@@ -1,0 +1,1898 @@
+---
+title: "Cdx2 ChIP-seq Peak Calls Analysis"
+author:
+- name: Hari Easwaran
+  affiliation: JHU
+package: packageName
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 10
+    fig_height: 7.142857
+abstract: |
+  Cdx2 ChIP-seq Peak Calls Analysis
+vignette: |
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+# Introduction
+ChIP-seq Peak Annotation and Functional Analysis:
+https://hbctraining.github.io/Intro-to-ChIPseq/lessons/12_functional_analysis.html
+
+Main goals: 
+1) What is the expression status of the genes with Cdx2 enriched promoters (-3000/+3000 around TSS) in Proximal and Distal organoids in the different medium conditions (FM and BM), with and without Cdx2-KO?
+2)
+
+```{r Setup-Load Data and Organize, include=FALSE}
+##Load libraries
+
+library(rtracklayer)
+library(GenomicRanges)
+library(data.table)
+library(beanplot)
+
+library(limma)
+library(VennDiagram)
+library(ggplot2)
+library(ggrepel) # used for Volcano plot
+library(cowplot) # used fo plot_grid
+library(ggupset)
+library(ggimage)
+library(org.Mm.eg.db)
+library(ChIPseeker)
+library(fgsea)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+
+oldPar <- par(no.readonly = T)
+
+###############################################################
+# Necessary funcitons
+###############################################################
+#HEATMAP.3 function for more flexibility with row and column side colors
+# https://raw.githubusercontent.com/obigriffith/biostar-tutorials/master/Heatmaps/heatmap.3.R
+{heatmap.3 <- function(x,
+                      Rowv = TRUE, Colv = if (symm) "Rowv" else TRUE,
+                      distfun = dist,
+                      hclustfun = hclust,
+                      dendrogram = c("both","row", "column", "none"),
+                      symm = FALSE,
+                      scale = c("none","row", "column"),
+                      na.rm = TRUE,
+                      revC = identical(Colv,"Rowv"),
+                      add.expr,
+                      breaks,
+                      symbreaks = max(x < 0, na.rm = TRUE) || scale != "none",
+                      col = "heat.colors",
+                      colsep,
+                      rowsep,
+                      sepcolor = "white",
+                      sepwidth = c(0.05, 0.05),
+                      cellnote,
+                      notecex = 1,
+                      notecol = "cyan",
+                      na.color = par("bg"),
+                      trace = c("none", "column","row", "both"),
+                      tracecol = "cyan",
+                      hline = median(breaks),
+                      vline = median(breaks),
+                      linecol = tracecol,
+                      margins = c(5,5),
+                      ColSideColors,
+                      RowSideColors,
+                      side.height.fraction=0.3,
+                      cexRow = 0.2 + 1/log10(nr),
+                      cexCol = 0.2 + 1/log10(nc),
+                      labRow = NULL,
+                      labCol = NULL,
+                      key = TRUE,
+                      keysize = 1.5,
+                      density.info = c("none", "histogram", "density"),
+                      denscol = tracecol,
+                      symkey = max(x < 0, na.rm = TRUE) || symbreaks,
+                      densadj = 0.25,
+                      main = NULL,
+                      xlab = NULL,
+                      ylab = NULL,
+                      lmat = NULL,
+                      lhei = NULL,
+                      lwid = NULL,
+                      ColSideColorsSize = 1,
+                      RowSideColorsSize = 1,
+                      KeyValueName="Value",...){
+  
+  invalid <- function (x) {
+    if (missing(x) || is.null(x) || length(x) == 0)
+      return(TRUE)
+    if (is.list(x))
+      return(all(sapply(x, invalid)))
+    else if (is.vector(x))
+      return(all(is.na(x)))
+    else return(FALSE)
+  }
+  
+  x <- as.matrix(x)
+  scale01 <- function(x, low = min(x), high = max(x)) {
+    x <- (x - low)/(high - low)
+    x
+  }
+  retval <- list()
+  scale <- if (symm && missing(scale))
+    "none"
+  else match.arg(scale)
+  dendrogram <- match.arg(dendrogram)
+  trace <- match.arg(trace)
+  density.info <- match.arg(density.info)
+  if (length(col) == 1 && is.character(col))
+    col <- get(col, mode = "function")
+  if (!missing(breaks) && (scale != "none"))
+    warning("Using scale=\"row\" or scale=\"column\" when breaks are",
+            "specified can produce unpredictable results.", "Please consider using only one or the other.")
+  if (is.null(Rowv) || is.na(Rowv))
+    Rowv <- FALSE
+  if (is.null(Colv) || is.na(Colv))
+    Colv <- FALSE
+  else if (Colv == "Rowv" && !isTRUE(Rowv))
+    Colv <- FALSE
+  if (length(di <- dim(x)) != 2 || !is.numeric(x))
+    stop("`x' must be a numeric matrix")
+  nr <- di[1]
+  nc <- di[2]
+  if (nr <= 1 || nc <= 1)
+    stop("`x' must have at least 2 rows and 2 columns")
+  if (!is.numeric(margins) || length(margins) != 2)
+    stop("`margins' must be a numeric vector of length 2")
+  if (missing(cellnote))
+    cellnote <- matrix("", ncol = ncol(x), nrow = nrow(x))
+  if (!inherits(Rowv, "dendrogram")) {
+    if (((!isTRUE(Rowv)) || (is.null(Rowv))) && (dendrogram %in%
+                                                   c("both", "row"))) {
+      if (is.logical(Colv) && (Colv))
+        dendrogram <- "column"
+      else dedrogram <- "none"
+      warning("Discrepancy: Rowv is FALSE, while dendrogram is `",
+              dendrogram, "'. Omitting row dendogram.")
+    }
+  }
+  if (!inherits(Colv, "dendrogram")) {
+    if (((!isTRUE(Colv)) || (is.null(Colv))) && (dendrogram %in%
+                                                   c("both", "column"))) {
+      if (is.logical(Rowv) && (Rowv))
+        dendrogram <- "row"
+      else dendrogram <- "none"
+      warning("Discrepancy: Colv is FALSE, while dendrogram is `",
+              dendrogram, "'. Omitting column dendogram.")
+    }
+  }
+  if (inherits(Rowv, "dendrogram")) {
+    ddr <- Rowv
+    rowInd <- order.dendrogram(ddr)
+  }
+  else if (is.integer(Rowv)) {
+    hcr <- hclustfun(distfun(x))
+    ddr <- as.dendrogram(hcr)
+    ddr <- reorder(ddr, Rowv)
+    rowInd <- order.dendrogram(ddr)
+    if (nr != length(rowInd))
+      stop("row dendrogram ordering gave index of wrong length")
+  }
+  else if (isTRUE(Rowv)) {
+    Rowv <- rowMeans(x, na.rm = na.rm)
+    hcr <- hclustfun(distfun(x))
+    ddr <- as.dendrogram(hcr)
+    ddr <- reorder(ddr, Rowv)
+    rowInd <- order.dendrogram(ddr)
+    if (nr != length(rowInd))
+      stop("row dendrogram ordering gave index of wrong length")
+  }
+  else {
+    rowInd <- nr:1
+  }
+  if (inherits(Colv, "dendrogram")) {
+    ddc <- Colv
+    colInd <- order.dendrogram(ddc)
+  }
+  else if (identical(Colv, "Rowv")) {
+    if (nr != nc)
+      stop("Colv = \"Rowv\" but nrow(x) != ncol(x)")
+    if (exists("ddr")) {
+      ddc <- ddr
+      colInd <- order.dendrogram(ddc)
+    }
+    else colInd <- rowInd
+  }
+  else if (is.integer(Colv)) {
+    hcc <- hclustfun(distfun(if (symm)
+      x
+      else t(x)))
+    ddc <- as.dendrogram(hcc)
+    ddc <- reorder(ddc, Colv)
+    colInd <- order.dendrogram(ddc)
+    if (nc != length(colInd))
+      stop("column dendrogram ordering gave index of wrong length")
+  }
+  else if (isTRUE(Colv)) {
+    Colv <- colMeans(x, na.rm = na.rm)
+    hcc <- hclustfun(distfun(if (symm)
+      x
+      else t(x)))
+    ddc <- as.dendrogram(hcc)
+    ddc <- reorder(ddc, Colv)
+    colInd <- order.dendrogram(ddc)
+    if (nc != length(colInd))
+      stop("column dendrogram ordering gave index of wrong length")
+  }
+  else {
+    colInd <- 1:nc
+  }
+  retval$rowInd <- rowInd
+  retval$colInd <- colInd
+  retval$call <- match.call()
+  x <- x[rowInd, colInd]
+  x.unscaled <- x
+  cellnote <- cellnote[rowInd, colInd]
+  if (is.null(labRow))
+    labRow <- if (is.null(rownames(x)))
+      (1:nr)[rowInd]
+  else rownames(x)
+  else labRow <- labRow[rowInd]
+  if (is.null(labCol))
+    labCol <- if (is.null(colnames(x)))
+      (1:nc)[colInd]
+  else colnames(x)
+  else labCol <- labCol[colInd]
+  if (scale == "row") {
+    retval$rowMeans <- rm <- rowMeans(x, na.rm = na.rm)
+    x <- sweep(x, 1, rm)
+    retval$rowSDs <- sx <- apply(x, 1, sd, na.rm = na.rm)
+    x <- sweep(x, 1, sx, "/")
+  }
+  else if (scale == "column") {
+    retval$colMeans <- rm <- colMeans(x, na.rm = na.rm)
+    x <- sweep(x, 2, rm)
+    retval$colSDs <- sx <- apply(x, 2, sd, na.rm = na.rm)
+    x <- sweep(x, 2, sx, "/")
+  }
+  if (missing(breaks) || is.null(breaks) || length(breaks) < 1) {
+    if (missing(col) || is.function(col))
+      breaks <- 16
+    else breaks <- length(col) + 1
+  }
+  if (length(breaks) == 1) {
+    if (!symbreaks)
+      breaks <- seq(min(x, na.rm = na.rm), max(x, na.rm = na.rm),
+                    length = breaks)
+    else {
+      extreme <- max(abs(x), na.rm = TRUE)
+      breaks <- seq(-extreme, extreme, length = breaks)
+    }
+  }
+  nbr <- length(breaks)
+  ncol <- length(breaks) - 1
+  if (class(col) == "function")
+    col <- col(ncol)
+  min.breaks <- min(breaks)
+  max.breaks <- max(breaks)
+  x[x < min.breaks] <- min.breaks
+  x[x > max.breaks] <- max.breaks
+  if (missing(lhei) || is.null(lhei))
+    lhei <- c(keysize, 4)
+  if (missing(lwid) || is.null(lwid))
+    lwid <- c(keysize, 4)
+  if (missing(lmat) || is.null(lmat)) {
+    lmat <- rbind(4:3, 2:1)
+    
+    if (!missing(ColSideColors)) {
+      #if (!is.matrix(ColSideColors))
+      #stop("'ColSideColors' must be a matrix")
+      if (!is.character(ColSideColors) || nrow(ColSideColors) != nc)
+        stop("'ColSideColors' must be a matrix of nrow(x) rows")
+      lmat <- rbind(lmat[1, ] + 1, c(NA, 1), lmat[2, ] + 1)
+      #lhei <- c(lhei[1], 0.2, lhei[2])
+      lhei=c(lhei[1], side.height.fraction*ColSideColorsSize/2, lhei[2])
+    }
+    
+    if (!missing(RowSideColors)) {
+      #if (!is.matrix(RowSideColors))
+      #stop("'RowSideColors' must be a matrix")
+      if (!is.character(RowSideColors) || ncol(RowSideColors) != nr)
+        stop("'RowSideColors' must be a matrix of ncol(x) columns")
+      lmat <- cbind(lmat[, 1] + 1, c(rep(NA, nrow(lmat) - 1), 1), lmat[,2] + 1)
+      #lwid <- c(lwid[1], 0.2, lwid[2])
+      lwid <- c(lwid[1], side.height.fraction*RowSideColorsSize/2, lwid[2])
+    }
+    lmat[is.na(lmat)] <- 0
+  }
+  
+  if (length(lhei) != nrow(lmat))
+    stop("lhei must have length = nrow(lmat) = ", nrow(lmat))
+  if (length(lwid) != ncol(lmat))
+    stop("lwid must have length = ncol(lmat) =", ncol(lmat))
+  op <- par(no.readonly = TRUE)
+  on.exit(par(op))
+  
+  layout(lmat, widths = lwid, heights = lhei, respect = FALSE)
+  
+  if (!missing(RowSideColors)) {
+    if (!is.matrix(RowSideColors)){
+      par(mar = c(margins[1], 0, 0, 0.5))
+      image(rbind(1:nr), col = RowSideColors[rowInd], axes = FALSE)
+    } else {
+      par(mar = c(margins[1], 0, 0, 0.5))
+      rsc = t(RowSideColors[,rowInd, drop=F])
+      rsc.colors = matrix()
+      rsc.names = names(table(rsc))
+      rsc.i = 1
+      for (rsc.name in rsc.names) {
+        rsc.colors[rsc.i] = rsc.name
+        rsc[rsc == rsc.name] = rsc.i
+        rsc.i = rsc.i + 1
+      }
+      rsc = matrix(as.numeric(rsc), nrow = dim(rsc)[1])
+      image(t(rsc), col = as.vector(rsc.colors), axes = FALSE)
+      if (length(rownames(RowSideColors)) > 0) {
+        axis(1, 0:(dim(rsc)[2] - 1)/max(1,(dim(rsc)[2] - 1)), rownames(RowSideColors), las = 2, tick = FALSE)
+      }
+    }
+  }
+  
+  if (!missing(ColSideColors)) {
+    
+    if (!is.matrix(ColSideColors)){
+      par(mar = c(0.5, 0, 0, margins[2]))
+      image(cbind(1:nc), col = ColSideColors[colInd], axes = FALSE)
+    } else {
+      par(mar = c(0.5, 0, 0, margins[2]))
+      csc = ColSideColors[colInd, , drop=F]
+      csc.colors = matrix()
+      csc.names = names(table(csc))
+      csc.i = 1
+      for (csc.name in csc.names) {
+        csc.colors[csc.i] = csc.name
+        csc[csc == csc.name] = csc.i
+        csc.i = csc.i + 1
+      }
+      csc = matrix(as.numeric(csc), nrow = dim(csc)[1])
+      image(csc, col = as.vector(csc.colors), axes = FALSE)
+      if (length(colnames(ColSideColors)) > 0) {
+        axis(2, 0:(dim(csc)[2] - 1)/max(1,(dim(csc)[2] - 1)), colnames(ColSideColors), las = 2, tick = FALSE)
+      }
+    }
+  }
+  
+  par(mar = c(margins[1], 0, 0, margins[2]))
+  x <- t(x)
+  cellnote <- t(cellnote)
+  if (revC) {
+    iy <- nr:1
+    if (exists("ddr"))
+      ddr <- rev(ddr)
+    x <- x[, iy]
+    cellnote <- cellnote[, iy]
+  }
+  else iy <- 1:nr
+  image(1:nc, 1:nr, x, xlim = 0.5 + c(0, nc), ylim = 0.5 + c(0, nr), axes = FALSE, xlab = "", ylab = "", col = col, breaks = breaks, ...)
+  retval$carpet <- x
+  if (exists("ddr"))
+    retval$rowDendrogram <- ddr
+  if (exists("ddc"))
+    retval$colDendrogram <- ddc
+  retval$breaks <- breaks
+  retval$col <- col
+  if (!invalid(na.color) & any(is.na(x))) { # load library(gplots)
+    mmat <- ifelse(is.na(x), 1, NA)
+    image(1:nc, 1:nr, mmat, axes = FALSE, xlab = "", ylab = "",
+          col = na.color, add = TRUE)
+  }
+  axis(1, 1:nc, labels = labCol, las = 2, line = -0.5, tick = 0,
+       cex.axis = cexCol)
+  if (!is.null(xlab))
+    mtext(xlab, side = 1, line = margins[1] - 1.25)
+  axis(4, iy, labels = labRow, las = 2, line = -0.5, tick = 0,
+       cex.axis = cexRow)
+  if (!is.null(ylab))
+    mtext(ylab, side = 4, line = margins[2] - 1.25)
+  if (!missing(add.expr))
+    eval(substitute(add.expr))
+  if (!missing(colsep))
+    for (csep in colsep) rect(xleft = csep + 0.5, ybottom = rep(0, length(csep)), xright = csep + 0.5 + sepwidth[1], ytop = rep(ncol(x) + 1, csep), lty = 1, lwd = 1, col = sepcolor, border = sepcolor)
+  if (!missing(rowsep))
+    for (rsep in rowsep) rect(xleft = 0, ybottom = (ncol(x) + 1 - rsep) - 0.5, xright = nrow(x) + 1, ytop = (ncol(x) + 1 - rsep) - 0.5 - sepwidth[2], lty = 1, lwd = 1, col = sepcolor, border = sepcolor)
+  min.scale <- min(breaks)
+  max.scale <- max(breaks)
+  x.scaled <- scale01(t(x), min.scale, max.scale)
+  if (trace %in% c("both", "column")) {
+    retval$vline <- vline
+    vline.vals <- scale01(vline, min.scale, max.scale)
+    for (i in colInd) {
+      if (!is.null(vline)) {
+        abline(v = i - 0.5 + vline.vals, col = linecol,
+               lty = 2)
+      }
+      xv <- rep(i, nrow(x.scaled)) + x.scaled[, i] - 0.5
+      xv <- c(xv[1], xv)
+      yv <- 1:length(xv) - 0.5
+      lines(x = xv, y = yv, lwd = 1, col = tracecol, type = "s")
+    }
+  }
+  if (trace %in% c("both", "row")) {
+    retval$hline <- hline
+    hline.vals <- scale01(hline, min.scale, max.scale)
+    for (i in rowInd) {
+      if (!is.null(hline)) {
+        abline(h = i + hline, col = linecol, lty = 2)
+      }
+      yv <- rep(i, ncol(x.scaled)) + x.scaled[i, ] - 0.5
+      yv <- rev(c(yv[1], yv))
+      xv <- length(yv):1 - 0.5
+      lines(x = xv, y = yv, lwd = 1, col = tracecol, type = "s")
+    }
+  }
+  if (!missing(cellnote))
+    text(x = c(row(cellnote)), y = c(col(cellnote)), labels = c(cellnote),
+         col = notecol, cex = notecex)
+  par(mar = c(margins[1], 0, 0, 0))
+  if (dendrogram %in% c("both", "row")) {
+    plot(ddr, horiz = TRUE, axes = FALSE, yaxs = "i", leaflab = "none")
+  }
+  else plot.new()
+  par(mar = c(0, 0, if (!is.null(main)) 5 else 0, margins[2]))
+  if (dendrogram %in% c("both", "column")) {
+    plot(ddc, axes = FALSE, xaxs = "i", leaflab = "none")
+  }
+  else plot.new()
+  if (!is.null(main))
+    title(main, cex.main = 1.5 * op[["cex.main"]])
+  if (key) {
+    par(mar = c(5, 4, 2, 1), cex = 0.75)
+    tmpbreaks <- breaks
+    if (symkey) {
+      max.raw <- max(abs(c(x, breaks)), na.rm = TRUE)
+      min.raw <- -max.raw
+      tmpbreaks[1] <- -max(abs(x), na.rm = TRUE)
+      tmpbreaks[length(tmpbreaks)] <- max(abs(x), na.rm = TRUE)
+    }
+    else {
+      min.raw <- min(x, na.rm = TRUE)
+      max.raw <- max(x, na.rm = TRUE)
+    }
+    
+    z <- seq(min.raw, max.raw, length = length(col))
+    image(z = matrix(z, ncol = 1), col = col, breaks = tmpbreaks,
+          xaxt = "n", yaxt = "n")
+    par(usr = c(0, 1, 0, 1))
+    lv <- pretty(breaks)
+    xv <- scale01(as.numeric(lv), min.raw, max.raw)
+    axis(1, at = xv, labels = lv)
+    if (scale == "row")
+      mtext(side = 1, "Row Z-Score", line = 2)
+    else if (scale == "column")
+      mtext(side = 1, "Column Z-Score", line = 2)
+    else mtext(side = 1, KeyValueName, line = 2)
+    if (density.info == "density") {
+      dens <- density(x, adjust = densadj, na.rm = TRUE)
+      omit <- dens$x < min(breaks) | dens$x > max(breaks)
+      dens$x <- dens$x[-omit]
+      dens$y <- dens$y[-omit]
+      dens$x <- scale01(dens$x, min.raw, max.raw)
+      lines(dens$x, dens$y/max(dens$y) * 0.95, col = denscol,
+            lwd = 1)
+      axis(2, at = pretty(dens$y)/max(dens$y) * 0.95, pretty(dens$y))
+      title("Color Key\nand Density Plot")
+      par(cex = 0.5)
+      mtext(side = 2, "Density", line = 2)
+    }
+    else if (density.info == "histogram") {
+      h <- hist(x, plot = FALSE, breaks = breaks)
+      hx <- scale01(breaks, min.raw, max.raw)
+      hy <- c(h$counts, h$counts[length(h$counts)])
+      lines(hx, hy/max(hy) * 0.95, lwd = 1, type = "s",
+            col = denscol)
+      axis(2, at = pretty(hy)/max(hy) * 0.95, pretty(hy))
+      title("Color Key\nand Histogram")
+      par(cex = 0.5)
+      mtext(side = 2, "Count", line = 2)
+    }
+    else title("Color Key")
+  }
+  else plot.new()
+  retval$colorTable <- data.frame(low = retval$breaks[-length(retval$breaks)],
+                                  high = retval$breaks[-1], color = retval$col)
+  invisible(retval)
+}
+}
+
+#Function for creating a dataframe from list 
+fun.CreateTableFromList <- function(ListOfGenes, names.ListOfGenes, stringsAsFactors){
+  #ListOfGenes should be list of vectors that has to be converted to data.frame; names.ListOfGenes is the names of the list in the same order, which will be used for teh column names in the output dataframe; stringsAsFactors is "T" or"F".
+  max.length <- max(sapply(ListOfGenes, length))
+  x <- lapply(c(1:length(ListOfGenes)), FUN=function(i){
+    c(ListOfGenes[[i]], rep(NA, max.length-length(ListOfGenes[[i]])))
+  })
+  x.tab <- do.call(cbind, x)
+  x.tab <- data.frame(x.tab, stringsAsFactors=stringsAsFactors, check.names=F)
+  colnames(x.tab) <- names.ListOfGenes
+  return(x.tab)
+}
+
+#####################
+# Create biomaRt functions
+#####################
+# Basic function to convert human to mouse gene names. The function convertHumanGeneList was modified from # "Translate_human_to_mouse.txt" (https://gist.github.com/FloWuenne/f8fc922477df04c1642e9d8945c48d47)
+## Create BioMart objects to speed up biomaRt functions
+require("biomaRt")
+#human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+#mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+# Sometime the biomart server does not work (likely to server overload or maintenance). Check https://github.com/grimbough/biomaRt/issues/61
+human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
+mouse <- useMart("ensembl", dataset = "mmusculus_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
+
+convertHumanToMouseGeneSymbolList <- function(x){
+    genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+
+  return(genesV2)
+}
+
+convertHumanToMouseEntrezGeneIDList <- function(x){
+    genesV2 = getLDS(attributes = c("entrezgene_id"), filters = "entrezgene_id", values = x , mart = human, attributesL = c("entrezgene_id"), martL = mouse, uniqueRows=T)
+
+    colnames(genesV2) <- c("human_entrezgene_id", "mouse_entrezgene_id")
+    return(genesV2)
+}
+
+#Get the list of peak files (the narrowPeak files are submitted in GEO database)
+peak_files <- file.path("D:/HariEaswaran/R_Working_Directory_onc-cbio/Lijing/ChIP-Seq/PeakCallsFromLijing/chip_annotation_fromLijing", list.files("D:/HariEaswaran/R_Working_Directory_onc-cbio/Lijing/ChIP-Seq/PeakCallsFromLijing/chip_annotation_fromLijing", pattern = ".csv"))
+#peak_files
+
+#####################
+#Read peak files
+#####################
+peak_granges <- lapply(peak_files, FUN=function(l){
+  x <- fread(l)
+  colnames(x)[which(colnames(x) %in% paste0("V", 4:10))] <- c("peak name", 
+                                                              "-10*log10qvalue",
+                                                              "Strand",
+                                                              "fold change",
+                                                              "-log10pvalue",
+                                                              "-log10qvalue",
+                                                              "summit position to peak start"
+  )
+  xx <- GRanges(seqnames=Rle(x$seqnames), 
+                ranges=IRanges(start=x$start, end=x$end, names=x$V4)
+  )
+  mcols(xx) <- x[, c("peak name", 
+                     "-10*log10qvalue",
+                     "Strand",
+                     "fold change",
+                     "-log10pvalue",
+                     "-log10qvalue",
+                     "summit position to peak start",
+                     "annotation", 
+                     "geneStart", 
+                     "geneEnd", 
+                     "geneLength",
+                     "geneStrand",
+                     "geneId",
+                     "transcriptId",
+                     "distanceToTSS",
+                     "ENSEMBL",
+                     "SYMBOL", 
+                     "GENENAME", 
+                     "flank_txIds", 
+                     "flank_geneIds", 
+                     "flank_gene_distances")]
+  return(xx)
+  })
+
+names(peak_granges) <- c("ProxFull-1", "ProxBase-1", "DistFull-1", "DistBase-1", "ProxFull-2", "ProxBase-2", "DistFull-2", "DistBase-2", "ProxFull-3", "ProxBase-3", "DistFull-3", "DistBase-3")
+
+##########################################################################
+#Convert peak_granges to GRangesList and perform some basic plots
+##########################################################################
+peak_grangeslist <- GRangesList(peak_granges)
+
+covplot(peak_grangeslist[[1]], weightCol="-10*log10qvalue")
+
+# Get the genome regions which are covered by at least 1 of the 3 sets of peaks for each condition
+covered_GRanges <- lapply(list("ProxFull", "ProxBase", "DistFull", "DistBase"), function(l){
+  x <- peak_grangeslist[paste(l, 1:3, sep="-")]
+  peak_coverage <- coverage(x)
+  covered_ranges <- slice(peak_coverage, lower=3, rangesOnly=T)
+  covered_ranges <- GRanges(covered_ranges)
+  return(covered_ranges)
+})
+names(covered_GRanges) <- c("ProxFull", "ProxBase", "DistFull", "DistBase")
+
+#Profile of ChIP peaks binding to TSS regions
+promoter <- getPromoters(TxDb=txdb, upstream=3000, downstream=3000)
+tagMatrixList <- lapply(covered_GRanges, getTagMatrix, windows=promoter)
+
+
+#Average Profiles of ChIP peaks among different experiments. Confidence interval estimated by bootstrap method is also plotted for characterizing ChIP binding profiles.
+plotAvgProf(tagMatrixList, xlim=c(-3000, 3000))
+plotAvgProf(tagMatrixList, xlim=c(-3000, 3000), conf=0.95,resample=500, facet="row", xlab="Genomic Region (5'->3')", ylab = "Read Count Frequency")
+
+## Heatmap of ChIP binding to TSS regions
+tagHeatmap(tagMatrixList, xlim=c(-3000, 3000), color=NULL)
+
+#Peak Annotation
+peakAnnoList <- lapply(covered_GRanges, annotatePeak, TxDb=txdb,
+                       tssRegion=c(-3000, 3000), verbose=FALSE, addFlankGeneInfo=TRUE, flankDistance=5000,annoDb = "org.Mm.eg.db")
+
+
+## Visualize Feature Distribitio of Genomic Annotation
+plotAnnoBar(peakAnnoList)
+
+lapply(peakAnnoList, plotAnnoPie)
+lapply(peakAnnoList, plotAnnoBar)
+lapply(peakAnnoList, vennpie)
+lapply(peakAnnoList, upsetplot, vennpie=TRUE)
+
+#Distance to TSS profiles among ChIPseq data
+plotDistToTSS(peakAnnoList)
+
+#Overlap of peaks and annotated genes
+print("Venn plot of peaks (peakAnnoList)")
+vennplot(
+  lapply(peakAnnoList, function(i) as.data.frame(i)$geneId)
+  )
+
+#Visualize distribution of TF-binding loci relative to TSS
+lapply(peakAnnoList, plotDistToTSS, title="Distribution of transcription factor-binding loci\nrelative to TSS")
+
+################################################
+# Get gene names with peak near promoter
+################################################
+peakAnnoGenesNearPromoter <- lapply(peakAnnoList, function(l){
+  x <- as.GRanges(l)
+  x <- x[grep("Promoter", x$annotation), c("distanceToTSS", "SYMBOL", "geneId")]
+  return(x)
+})
+
+#Check distance to TSS of the promter-related peaks
+lapply(names(peakAnnoGenesNearPromoter), FUN = function(l){
+  plot(density(peakAnnoGenesNearPromoter[[l]]$distanceToTSS), main=l, sub = "Density Plot (distanceToTSS)" )
+})
+
+# Venn plot of genes annotated to peaks in the differnet ChIP-Seq conditions.
+print("Venn plot genes annotated to peaks (peakAnnoGenesNearPromoter)")
+x <- lapply(peakAnnoGenesNearPromoter, FUN = function(l){
+  l$SYMBOL
+})
+vennplot(x)
+rm(x)
+```
+
+# Load the Organoid RNA-seq expression data.
+Check following script for details about some steps below (../Analysis/Scripts/RNA_seq_Analyses.Rmd)
+```{r RNA-seq expression data, echo=FALSE}
+################################################
+# Load RNA-seq expression data and prepare data for expression analyses
+################################################
+#attach("D:/HariEaswaran/R_Working_Directory_onc-cbio/Lijing/July_09_2020/Analysis/Diff_Expr_Analyses_Results/Lijing_RNA_seq_Analyses.RData", name="Lijing_RNA_seq_Analyses")
+attach(paste0("D:/HariEaswaran/R_Working_Directory_onc-cbio/Lijing/July_09_2020/Analysis/Diff_Expr_Analyses_Results/New_Analyses_062922/", "Lijing_RNA_seq_Analyses_062922.RData"), name="Lijing_RNA_seq_Analyses")
+ls("Lijing_RNA_seq_Analyses")
+
+normCounts.DF <- as.data.frame(normCounts)
+
+normCounts.DF <- normCounts.DF + 1 #because many counts values are 0
+normCounts.DF <- normCounts.DF[apply(normCounts.DF, 1, function(row) all(row > 4 )), ] #Retain counts for only those genes where the samples has counts greater than 4.
+dim(normCounts.DF)
+
+dim(normCounts.DF)
+normCounts.DF <- log2(normCounts.DF) #log transform counts
+
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(normCounts.DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+normCounts.DF <- merge(eToSym,normCounts.DF,
+                                       by.x=1,
+                                       by.y=0,
+                                       all.x=FALSE,
+                                       all.y=TRUE)
+
+#colnames(normCounts.DF)
+colnames(normCounts.DF) <- gsub(pattern="_quant.sf", replacement="",colnames(normCounts.DF))
+
+head(normCounts.DF)
+
+samples$Samples
+samples[, c("Samples", "Concise_Description", "Group")]
+
+# Aggregate samples by mean of groups
+levels(samples$Group)
+normCounts.DF.aggrMean <- lapply(levels(samples$Group), FUN=function(i){
+  samples.x <- samples[samples$Group %in% i, "Samples"]
+  apply(normCounts.DF[,samples.x], 1, mean)
+})
+names(normCounts.DF.aggrMean) <- levels(samples$Group)
+normCounts.DF.aggrMean <- do.call(cbind.data.frame, normCounts.DF.aggrMean)
+normCounts.DF.aggrMean <- cbind.data.frame(normCounts.DF[,c("ENTREZID", "SYMBOL")], normCounts.DF.aggrMean)
+
+head(normCounts.DF.aggrMean)
+
+################################################
+# Get the peakAnnoGenesNearPromoter symbols for each ChIP-sample group and analyse expression of those genes.
+################################################
+
+levels(samples$Group)
+sampleOrder <- c("P_sc_FM", "P_sc_BM", "P_cdx2_FM", "P_cdx2_BM", "D_sc_FM", "D_sc_BM", "D_cdx2_FM", "D_cdx2_BM")
+
+library(RColorBrewer)
+#display.brewer.all()
+beanplot.sampleColor <- list(
+  c(brewer.pal(9,  "Reds")[4], "grey60", "grey40", "black"),
+  c(brewer.pal(9,  "Reds")[5], "grey60", "grey40", "black"),
+  c(brewer.pal(9,  "RdPu")[4], "grey60", "grey40", "black"),
+  c(brewer.pal(9,  "RdPu")[5], "grey60", "grey40", "black"),
+  c(brewer.pal(9,  "Blues")[4], "grey60", "grey40", "black"),
+  c(brewer.pal(9,  "Blues")[5], "grey60", "grey40", "black"),
+  c(brewer.pal(9,  "BuGn")[4], "grey60", "grey40", "black"),
+  c(brewer.pal(9,  "BuGn")[5], "grey60", "grey40", "black")
+  )
+
+# Expression boxplot/beanplot of promoter genes with ChIP-peak for each sample
+sapply(names(peakAnnoGenesNearPromoter), FUN = function(l){
+  x <- peakAnnoGenesNearPromoter[[l]]
+  x <- x$SYMBOL
+  counts.x <- normCounts.DF.aggrMean[normCounts.DF.aggrMean$SYMBOL %in% x, sampleOrder]
+  par(mar=c(8,4,2,2))
+  
+  beanplot(counts.x, bw="nrd", col=beanplot.sampleColor, names=colnames(counts.x), log="auto", what=c(1,1,1,1), main=paste("Expression boxplot of promoter genes with ChIP-peak in ", l, sep=" "), ylab="Expression", las=2, overallline="median", beanlines="median", sub="Median beanline plotted")
+})
+
+# Expression boxplot of randomly sampled genes with ChIP-peak for each sample
+sapply(names(peakAnnoGenesNearPromoter), FUN = function(l){
+  x <- peakAnnoGenesNearPromoter[[l]]
+  x <- length(x$SYMBOL)
+  x <- sample(normCounts.DF.aggrMean$SYMBOL, size=x)
+  counts.x <- normCounts.DF.aggrMean[normCounts.DF.aggrMean$SYMBOL %in% x, sampleOrder]
+  par(mar=c(8,4,2,2))
+  
+  beanplot(counts.x, bw="nrd", col=beanplot.sampleColor, names=colnames(counts.x), log="auto", what=c(1,1,1,1), main=paste("Expression boxplot of randomly sampled genes \n Same number of genes as for ChIP-peak"), ylab="Expression", las=2, overallline="median", beanlines="median", sub="Median beanline plotted")
+})
+
+# Expression boxplot of promoter genes with ChIP-peak specific to ProxFull and ProxBase
+#names(peakAnnoGenesNearPromoter)
+x <- setdiff(unlist(
+  peakAnnoGenesNearPromoter[["ProxFull"]]$SYMBOL,
+  peakAnnoGenesNearPromoter[["ProxBase"]]$SYMBOL),
+  unlist(peakAnnoGenesNearPromoter[["DistFull"]]$SYMBOL,
+         peakAnnoGenesNearPromoter[["DistBase"]]$SYMBOL)
+  )
+x <- normCounts.DF.aggrMean[normCounts.DF.aggrMean$SYMBOL %in% x, sampleOrder]
+
+beanplot(x, bw="nrd", col=beanplot.sampleColor, names=colnames(x), log="auto", what=c(1,1,1,1), main="Expression boxplot of promoter genes\nwith ChIP-peak specific to ProxFull and ProxBase", ylab="Expression", las=2, overallline="median", beanlines="median", sub="Median beanline plotted")
+rm(x)
+
+# Expression boxplot of promoter genes with ChIP-peak specific to DistFull and DistBase
+#names(peakAnnoGenesNearPromoter)
+x <- setdiff(unlist(
+  peakAnnoGenesNearPromoter[["DistFull"]]$SYMBOL,
+  peakAnnoGenesNearPromoter[["DistBase"]]$SYMBOL),
+         unlist(peakAnnoGenesNearPromoter[["ProxFull"]]$SYMBOL,
+                peakAnnoGenesNearPromoter[["ProxBase"]]$SYMBOL)
+  )
+x <- normCounts.DF.aggrMean[normCounts.DF.aggrMean$SYMBOL %in% x, sampleOrder]
+
+beanplot(x, bw="nrd", col=beanplot.sampleColor, names=colnames(x), log="auto", what=c(1,1,1,1), main="Expression boxplot of promoter genes\nwith ChIP-peak specific to DistFull and DistBase", ylab="Expression", las=2, overallline="median", beanlines="median", sub="Median beanline plotted")
+rm(x)
+
+
+# Expression boxplot of promoter genes with ChIP-peak in any of the samples
+x <- Reduce(union, lapply(peakAnnoGenesNearPromoter, FUN=function(l){
+  l$SYMBOL
+}))
+x <- normCounts.DF.aggrMean[normCounts.DF.aggrMean$SYMBOL %in% x, sampleOrder]
+
+beanplot(x, bw="nrd", col=beanplot.sampleColor, names=colnames(x), log="auto", what=c(1,1,1,1), main="Expression boxplot of promoter genes\nwith ChIP-peak in any of the samples", ylab="Expression", las=2, overallline="median", beanlines="median", sub="Median beanline plotted")
+rm(x)
+
+# Expression boxplot of promoter genes with ChIP-peak common to all samples
+x <- Reduce(intersect, lapply(peakAnnoGenesNearPromoter, FUN=function(l){
+  l$SYMBOL
+}))
+x <- normCounts.DF.aggrMean[normCounts.DF.aggrMean$SYMBOL %in% x, sampleOrder]
+
+beanplot(x, bw="nrd", col=beanplot.sampleColor, names=colnames(x), log="auto", what=c(1,1,1,1), main="Expression boxplot of promoter genes\nwith ChIP-peak common to all samples", ylab="Expression", las=2, overallline="median", beanlines="median", sub="Median beanline plotted")
+rm(x)
+
+#write.table(x, "D../ChIP-Seq/PeakCallsFromLijing/x.txt", sep="\t", quote=F, row.names=F)
+
+par(oldPar)
+```
+
+# FGSEA of peakAnnoGenesNearPromoter
+```{r Create Diff. Genes List, echo=FALSE}
+# Create the list of Differentially expressed gene tables for all comparisons of Prox. and Distal RNA-seq samples.
+Diff.Genes_DF_All_Comparisons <- list(
+  ProxVsDist_FM_DF=annotatedRes_ProxVsDist_FM_DF,
+  ProxVsDist_BM_DF=annotatedRes_ProxVsDist_BM_DF,
+  ProxVsDist_Cdx2KO_FM_DF=annotatedRes_ProxVsDist_Cdx2KO_FM_DF,
+  ProxVsDist_Cdx2KO_BM_DF=annotatedRes_ProxVsDist_Cdx2KO_BM_DF,
+  Prox.Cdx2KOVsWT_FM_DF=annotatedRes_Prox.Cdx2KOVsWT_FM_DF,
+  Prox.Cdx2KOVsWT_BM_DF=annotatedRes_Prox.Cdx2KOVsWT_BM_DF,
+  Dist.Cdx2KOVsWT_FM_DF=annotatedRes_Dist.Cdx2KOVsWT_FM_DF,
+  Dist.Cdx2KOVsWT_BM_DF=annotatedRes_Dist.Cdx2KOVsWT_BM_DF
+)
+
+Diff.Genes_geneID_geneSymbol <- annotatedRes_ProxVsDist_FM_DF[, c("ENTREZID", "SYMBOL")]
+
+```
+
+Test for any association of peakAnnoGenesNearPromoter gene set with the ranking of all genes (ranked by measure of differential expression).
+```{r GSEA of peakAnnoGenesNearPromoter, echo=FALSE}
+peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList <- lapply(peakAnnoGenesNearPromoter, FUN = function(l){
+  x <- Diff.Genes_geneID_geneSymbol[Diff.Genes_geneID_geneSymbol$SYMBOL %in% l$SYMBOL, "ENTREZID"]
+  return(x)
+})
+
+# Run FGSEA
+NES.x <- lapply(names(Diff.Genes_DF_All_Comparisons), FUN=function(l){
+  
+  Diff.Genes <- Diff.Genes_DF_All_Comparisons[[l]]
+  
+  # Create rank table using the stat (Wald statistic computed dueing DESeq analysis) column
+  rankTable <- data.frame(Diff.Genes$ENTREZID, Diff.Genes$stat)
+  rankTable <- rankTable[order(rankTable$Diff.Genes.stat, decreasing=F), ]
+  #plot(y=rankTable$Diff.Genes.stat, x=c(1:nrow(rankTable)), type="b")
+  
+  # Create vector of ranking metric from rank table
+  rankTable_stat_gsea <- rankTable$Diff.Genes.stat
+  names(rankTable_stat_gsea) <- rankTable$Diff.Genes.ENTREZID
+  rankTable_stat_gsea[1:3]
+  
+  # Run fgsea() with gene set of interest, named vector of ranking metric.
+  set.seed(42)
+  gseaRes <- fgsea(peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList, rankTable_stat_gsea, minSize = 0, maxSize = Inf, eps=0.0)
+  gseaRes <- gseaRes[order(gseaRes$NES, decreasing = T), ]
+  #gseaRes[1:2, ]
+  
+  # Make a table plot for a bunch of top up and down pathways
+  topPathwaysUp <- gseaRes[ES > 0][head(order(pval), n=length(peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList)), pathway]
+  topPathwaysDown <- gseaRes[ES < 0][head(order(pval), n=length(peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList)), pathway]
+  topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+  print(paste("GSEA plot for", l))
+  plot.new()
+  plotGseaTable(peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList[topPathways], rankTable_stat_gsea, gseaRes, gseaParam=0.5)
+  
+  #Plot enrichment of each geneset
+  plEnr <- lapply(names(peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList), FUN=function(i){
+    plEnr <- plotEnrichment(peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList[[i]],
+                            rankTable_stat_gsea) + 
+      labs(title=i, subtitle=l) +
+      theme(plot.title = element_text(hjust = 0.5, size=7),
+            plot.subtitle = element_text(hjust = 0.5, size=7)
+      )
+    return(plEnr)
+  })
+  names(plEnr) <- names(peakAnnoGenesNearPromoter.entrezGeneID.myGeneSetList)
+  do.call(plot_grid, plEnr)
+  
+  return(gseaRes)
+}
+)
+names(NES.x) <- names(Diff.Genes_DF_All_Comparisons)
+NES.x <- lapply(names(NES.x), FUN=function(l){
+  x <- NES.x[[l]][,c("pathway", "NES")]
+  colnames(x)[2] <- paste(l, colnames(x)[2], sep="_")
+  return(x)
+})
+
+NES.x <- Reduce(function(x,y)merge(x,y,by="pathway"), NES.x)
+
+NES.x.mat <- as.matrix(NES.x[, 2:ncol(NES.x)])
+rownames(NES.x.mat) <- NES.x$pathway
+
+#Make separate heatmaps of ProxVsDist comaprison and Cdx2KOVsWT comparisons
+c("ProxVsDist", "Cdx2KOvsWT")
+invisible(sapply(c("ProxVsDist", "Cdx2KOVsWT"), FUN=function(i){
+  NES.x.mat.x <- NES.x.mat[, grep(i, colnames(NES.x.mat))]
+  heatmap.3(NES.x.mat.x, trace="none", scale="none", density.info="none", hclustfun = function(x)hclust(x, method = "complete"), margins=c(10,10), cexRow=0.8, cexCol=0.7, key=T, main=paste0("NES for ", i), col=colorRampPalette(c('blue', 'black', 'yellow'))(15), dendrogram="none", Rowv=F, Colv=F, cex=0.2)
+  })
+)
+rm(NES.x, NES.x.mat)
+```
+
+# Differential expression of proximal vs. distal TCGA-COAD tumor samples
+Determine proximal vs. distal colon tumor differentially expressed genes and create gene list of the differentially expressed genes for FGSEA analyses.
+
+```{r TCGA-COAD expression analyses, echo=FALSE}
+library("R.utils")
+rsemExpressionData <- loadToEnv("../TCGA/GDC_TCGA_COAD/RData/TCGA_COAD_ExpressionData.RData")[["rsemExpressionData"]]
+rsemExpressionTargets <- loadToEnv("../TCGA/GDC_TCGA_COAD/RData/TCGA_COAD_ExpressionData.RData")[["rsemExpressionTargets"]]
+
+clinicalMetadata <- fread("../TCGA/GDC_TCGA_COAD/Downloaded_data/METADATA/clinical.project-TCGA-COAD.2021-11-27/clinical.tsv")
+
+#colnames(rsemExpressionTargets)
+#rsemExpressionTargets$tcgaBarcode
+#rsemExpressionTargets$tissueOfOrigin
+
+rsemExpressionTargets.x <- unname(sapply(rsemExpressionTargets$tcgaBarcode, FUN=function(i){
+  paste(
+    strsplit(i, split = "-")[[1]][1],
+    strsplit(i, split = "-")[[1]][2],
+    strsplit(i, split = "-")[[1]][3],
+    sep="-")
+}))
+#length(rsemExpressionTargets.x); length(unique(rsemExpressionTargets.x))
+#head(rsemExpressionTargets.x)
+#which(duplicated(rsemExpressionTargets.x))
+
+rsemExpressionTargets.x <- lapply(unique(rsemExpressionTargets.x), FUN=function(i){
+  aa <- clinicalMetadata[grep(i, clinicalMetadata$case_submitter_id, value=F), c("case_submitter_id", "icd_10_code", "ajcc_pathologic_stage", "site_of_resection_or_biopsy", "tissue_or_organ_of_origin")]
+  bb <- rsemExpressionTargets[grep(i, rsemExpressionTargets$tcgaBarcode, value = F), ]
+  cc <- do.call(rbind.data.frame, rep(list(aa[1,]), nrow(bb)))
+  xx <- cbind.data.frame(bb, cc)
+})
+rsemExpressionTargets.x <- do.call(rbind.data.frame, rsemExpressionTargets.x)
+#length(unique(rsemExpressionTargets.x$case_submitter_id))
+#length(unique(rsemExpressionTargets.x$tcgaBarcode))
+
+#dim(rsemExpressionTargets.x)
+
+#rsemExpressionTargets.x[,c("tissueOfOrigin")]
+#rsemExpressionTargets.x[,c("tissueOfOrigin", "icd_10_code")]
+
+#identical(rsemExpressionTargets.x$tissueOfOrigin, rsemExpressionTargets.x$icd_10_code) #Not identical. Ignore these codes.
+identical(rsemExpressionTargets.x$site_of_resection_or_biopsy, rsemExpressionTargets.x$tissue_or_organ_of_origin) #some of these are not same but its ok. Use the site_of_resection_or_biopsy column for furhter analyses of colon segments. 
+
+# Get Proximal and Distal colon cancer samples
+unique(rsemExpressionTargets.x$site_of_resection_or_biopsy)
+
+# Use "Ascending colon" or "Cecum as Proximal (Right) Colon and "Descending colon" or "Sigmoid colon as Distal (Left) Colon 
+rsemExpressionTargets.x$locationProximalOrDistal <- rep(NA, times=nrow(rsemExpressionTargets.x))
+
+rsemExpressionTargets.x$locationProximalOrDistal[grep("Ascending colon|Cecum", rsemExpressionTargets.x$site_of_resection_or_biopsy, value=F)] <- "Proximal"
+rsemExpressionTargets.x$locationProximalOrDistal[grep("Descending colon|Sigmoid colon", rsemExpressionTargets.x$site_of_resection_or_biopsy, value=F)] <- "Distal"
+
+# Check distribution of RNA-seq count values
+print("Check distribution of RNA-seq count values before and after removing rows that all have nonZero values")
+par(mfcol=c(2,1))
+plot(density(rsemExpressionData[,2]), ylim=c(0, 0.3), main="Before removing all genes with 0 counts", col=rgb(0.1,0.1,0.1, alpha=0.1))
+invisible(
+  sapply(c(3:ncol(rsemExpressionData)), FUN=function(i){
+  lines(density(rsemExpressionData[,i]), col=rgb(0.1,0.1,0.1, alpha=0.1))
+  })
+  )#invisible used so that sapply only generates plots and does not print each output
+
+rsemExpressionData.nonZero <- rsemExpressionData[apply(rsemExpressionData[2:ncol(rsemExpressionData)], 1, function(row) all(row !=0 )), ]
+
+plot(density(rsemExpressionData.nonZero[,2]), ylim=c(0, 0.4), main="After removing all genes with 0 counts", col=rgb(0.1,0.1,0.1, alpha=0.1))
+invisible(
+  sapply(c(3:ncol(rsemExpressionData.nonZero)), FUN=function(i){
+  lines(density(rsemExpressionData.nonZero[,i]), col=rgb(0.1,0.1,0.1, alpha=0.1))
+  })
+)#invisible used so that sapply only generates plots and does not print each output
+par(oldPar)
+############################################################
+# Set up targets table for differentially expressed gene analyses (using limma)
+############################################################
+## Retain target data frame with only tumor samples of interest (tumSOI) that have proximal and distal annotation
+rsemExpressionTargets.x.tumSOI <- rsemExpressionTargets.x[rsemExpressionTargets.x$sampleTypeCode %in% "TP", ]
+
+rsemExpressionTargets.x.tumSOI <- rsemExpressionTargets.x.tumSOI[!is.na(rsemExpressionTargets.x.tumSOI$locationProximalOrDistal), ]
+#dim(rsemExpressionTargets.x); dim(rsemExpressionTargets.x.tumSOI)
+
+## Retain target data frame with only normal samples of interest (normSOI) that have proximal and distal annotation
+rsemExpressionTargets.x.normSOI <- rsemExpressionTargets.x[rsemExpressionTargets.x$sampleTypeCode %in% "NT", ]
+
+rsemExpressionTargets.x.normSOI <- rsemExpressionTargets.x.normSOI[!is.na(rsemExpressionTargets.x.normSOI$locationProximalOrDistal), ]
+
+#unique(rsemExpressionTargets.x.tumSOI$locationProximalOrDistal)
+#factor(rsemExpressionTargets.x.tumSOI$locationProximalOrDistal)
+#dim(rsemExpressionTargets.x); dim(rsemExpressionTargets.x.normSOI)
+
+############################################################
+# Label CDX2 lower25 vs. upper75 percentile samples across Proximal and Distal colon cancer samples 
+############################################################
+#Get the CDX2 expression for Proximal or Distal colon cancers
+tumSOI_CDX2.expr <- unlist(rsemExpressionData.nonZero[grep("CDX2", rownames(rsemExpressionData.nonZero), value=F), rsemExpressionTargets.x.tumSOI$Sample_Name])
+
+#quantile(tumSOI_CDX2.expr)["25%"]
+#quantile(tumSOI_CDX2.expr)["75%"]
+tumSOI_CDX2.expr.lower25Percentile <- names(tumSOI_CDX2.expr)[tumSOI_CDX2.expr <= quantile(tumSOI_CDX2.expr)["25%"]]
+tumSOI_CDX2.expr.upper75Percentile <- names(tumSOI_CDX2.expr)[tumSOI_CDX2.expr >= quantile(tumSOI_CDX2.expr)["75%"]]
+
+# Plot any gene of interest (say CDX2) expression in proximal and distal CRC samples
+invisible(
+  sapply(c("CDX2"), FUN=function(gene){
+    proximal.expr.gene <- unlist(rsemExpressionData.nonZero[
+      grep(gene, rownames(rsemExpressionData.nonZero), value=F),
+      rsemExpressionTargets.x[which(rsemExpressionTargets.x$locationProximalOrDistal %in% "Proximal"), "Sample_Name"]
+      ])
+    
+    distal.expr.gene <- unlist(rsemExpressionData.nonZero[
+      grep(gene, rownames(rsemExpressionData.nonZero), value=F),
+      rsemExpressionTargets.x[which(rsemExpressionTargets.x$locationProximalOrDistal %in% "Distal"), "Sample_Name"]
+      ])
+    print(wilcox.test(proximal.expr.gene, distal.expr.gene)$p.value)
+    beanplot(list(proximal=proximal.expr.gene, distal=distal.expr.gene), col=c("cyan2", "cyan4"), main=paste0("Expresion of ", gene, " in TCGA-COAD"), sub=paste0("Wilcox test p.val ", wilcox.test(proximal.expr.gene, distal.expr.gene, alternative = "t")$p.value))
+  })
+)
+
+# Plot CDX2 expression  across Proximal or Distal cancer samples
+beanplot(tumSOI_CDX2.expr, col="bisque", what=c(1,1,1,0), main="CDX2 Expression across Proximal or Distal TCGA-CRC tumors")
+abline(h=quantile(tumSOI_CDX2.expr)["25%"], col="green")
+abline(h=quantile(tumSOI_CDX2.expr)["75%"], col="red")
+
+# Label CDX2 low and high samples in rsemExpressionTargets.x.tumSOI
+rsemExpressionTargets.x.tumSOI$CDX2_lower25Percentile_upper75Percentile <- rep(NA, times=nrow(rsemExpressionTargets.x.tumSOI))
+
+rsemExpressionTargets.x.tumSOI$CDX2_lower25Percentile_upper75Percentile[rsemExpressionTargets.x.tumSOI$Sample_Name %in% tumSOI_CDX2.expr.lower25Percentile] <- "CDX2.expr.lower25Percentile"
+
+rsemExpressionTargets.x.tumSOI$CDX2_lower25Percentile_upper75Percentile[rsemExpressionTargets.x.tumSOI$Sample_Name %in% tumSOI_CDX2.expr.upper75Percentile] <- "CDX2.expr.upper75Percentile"
+
+############################################################
+# Label CDX2 lower25 vs. upper75 percentile samples for each of Proximal and Distal colon cancer samples
+############################################################
+tumSOI_CDX2.expr.Proximal <- unlist(
+  rsemExpressionData.nonZero[
+    grep("CDX2", rownames(rsemExpressionData.nonZero), value=F), 
+    rsemExpressionTargets.x.tumSOI[rsemExpressionTargets.x.tumSOI$locationProximalOrDistal %in% "Proximal", "Sample_Name"]
+    ]
+  )
+
+tumSOI_CDX2.expr.Distal <- unlist(
+  rsemExpressionData.nonZero[
+    grep("CDX2", rownames(rsemExpressionData.nonZero), value=F), 
+    rsemExpressionTargets.x.tumSOI[rsemExpressionTargets.x.tumSOI$locationProximalOrDistal %in% "Distal", "Sample_Name"]
+    ]
+)
+
+tumSOI_CDX2.expr.Proximal.lower25Percentile <- names(tumSOI_CDX2.expr.Proximal)[tumSOI_CDX2.expr.Proximal <= quantile(tumSOI_CDX2.expr.Proximal)["25%"]]
+tumSOI_CDX2.expr.Proximal.upper75Percentile <- names(tumSOI_CDX2.expr.Proximal)[tumSOI_CDX2.expr.Proximal >= quantile(tumSOI_CDX2.expr.Proximal)["75%"]]
+
+tumSOI_CDX2.expr.Distal.lower25Percentile <- names(tumSOI_CDX2.expr.Distal)[tumSOI_CDX2.expr.Distal <= quantile(tumSOI_CDX2.expr.Distal)["25%"]]
+tumSOI_CDX2.expr.Distal.upper75Percentile <- names(tumSOI_CDX2.expr.Distal)[tumSOI_CDX2.expr.Distal >= quantile(tumSOI_CDX2.expr.Distal)["75%"]]
+
+par(mar=c(10,4,2,2))
+barplot(
+  sapply(list(Proximal.lower25Percentile=tumSOI_CDX2.expr.Proximal.lower25Percentile, Proximal.upper75Percentile=tumSOI_CDX2.expr.Proximal.upper75Percentile, Distal.lower25Percentile=tumSOI_CDX2.expr.Distal.lower25Percentile, Distal.upper75Percentile=tumSOI_CDX2.expr.Distal.upper75Percentile), length),
+  main="Number of samples",
+  las=2,
+  cex.names=0.8
+  )
+par(oldPar)
+
+beanplot(list(Proximal=tumSOI_CDX2.expr.Proximal, Distal=tumSOI_CDX2.expr.Distal), col=list("orange", "blue1"), beanlines="mean", main="CDX2 lower25 and higher75 percentiles in Prox and Dist")
+abline(h=quantile(tumSOI_CDX2.expr.Proximal)["25%"], col="brown1")
+abline(h=quantile(tumSOI_CDX2.expr.Proximal)["75%"], col="brown4")
+abline(h=quantile(tumSOI_CDX2.expr.Distal)["25%"], col="cyan1")
+abline(h=quantile(tumSOI_CDX2.expr.Distal)["75%"], col="cyan4")
+legend("topright", legend=c("Prox25%ile", "Prox75%ile", "Dist25%ile", "Dist75%ile"), lty=1, col=c("brown1", "brown4", "cyan1", "cyan4"), cex=0.6, title="%ile Cut-off")
+
+
+# Label CDX2 low and high proximal and distal cancer samples in rsemExpressionTargets.x.tumSOI
+rsemExpressionTargets.x.tumSOI$ProxDist_CDX2_lower25Percentile_upper75Percentile <- rep(NA, times=nrow(rsemExpressionTargets.x.tumSOI))
+##Label Proximal samples
+rsemExpressionTargets.x.tumSOI$ProxDist_CDX2_lower25Percentile_upper75Percentile[rsemExpressionTargets.x.tumSOI$Sample_Name %in% tumSOI_CDX2.expr.Proximal.lower25Percentile] <- "CDX2.expr.Proximal.lower25Percentile"
+
+rsemExpressionTargets.x.tumSOI$ProxDist_CDX2_lower25Percentile_upper75Percentile[rsemExpressionTargets.x.tumSOI$Sample_Name %in% tumSOI_CDX2.expr.Proximal.upper75Percentile] <- "CDX2.expr.Proximal.upper75Percentile"
+
+##Label Distal samples
+rsemExpressionTargets.x.tumSOI$ProxDist_CDX2_lower25Percentile_upper75Percentile[rsemExpressionTargets.x.tumSOI$Sample_Name %in% tumSOI_CDX2.expr.Distal.lower25Percentile] <- "CDX2.expr.Distal.lower25Percentile"
+
+rsemExpressionTargets.x.tumSOI$ProxDist_CDX2_lower25Percentile_upper75Percentile[rsemExpressionTargets.x.tumSOI$Sample_Name %in% tumSOI_CDX2.expr.Distal.upper75Percentile] <- "CDX2.expr.Distal.upper75Percentile"
+```
+
+## Differential expression of TCGA-COAD samples of interest
+1) Differential expression of proximal vs. distal tumor samples
+2) Differential expression of CDX2 upper vs. lower 25 percentile 
+
+### Differential expression of proximal vs. distal tumor samples
+```{r TCGA-COAD Diff. Expr. proximal vs. distal, echo=FALSE}
+############################################################
+# Differential expression of proximal vs. distal tumor samples
+############################################################
+# In the following sapply operation, the input (i) should be 1:length(targetsInput.table.names); Note that values for targetsInput.table.names has to be explicitly passed in the function. The output generates the topTables of differentially expressed genes with names as defined in deOutput.table.names
+sapply(c(1:2), FUN=function(i, targetsInput.table.names = c("rsemExpressionTargets.x.tumSOI", "rsemExpressionTargets.x.normSOI"), deOutput.table.names = c("tumSOI_diffGenes_ProximalVsDistal", "normSOI_diffGenes_ProximalVsDistal")){
+  targets.table <- get(targetsInput.table.names[i], envir=.GlobalEnv)
+  dim(targets.table)
+  
+  design <- model.matrix(~ 0+factor(targets.table$locationProximalOrDistal))
+  colnames(design) <- levels(factor(targets.table$locationProximalOrDistal))
+  x <- rsemExpressionData.nonZero[, targets.table$Sample_Name]
+  dim(x); dim(targets.table)
+  fit <- lmFit(x, design)
+  contrast.matrix <- makeContrasts(Proximal-Distal, levels=design)
+  fit2 <- contrasts.fit(fit, contrast.matrix)
+  # Compute moderated t-statistic, F-statistic and log-odds.
+  fit2 <- eBayes(fit2)
+  deOutput.table <- topTable(fit2, coef=1, adjust="BH", number=nrow(x))
+  dim(deOutput.table)
+  #deOutput.table <- deOutput.table[deOutput.table$adj.P.Val <= 0.05, ]
+  dim(deOutput.table)
+  deOutput.table$geneSymbol <- sapply(rownames(deOutput.table), FUN = function(i){
+    strsplit(i, split="\\|")[[1]][1]
+  })
+  
+  #Volcano plot
+  # Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+  # add a column of NAs
+  deOutput.table$diffexpressed <- "NO"
+  # if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+  deOutput.table$diffexpressed[deOutput.table$logFC > 0.6 & deOutput.table$adj.P.Val <= 0.05] <- "UP"
+  # if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+  deOutput.table$diffexpressed[deOutput.table$logFC <= -0.6 & deOutput.table$adj.P.Val <= 0.05] <- "DOWN"
+  
+  ## Change point color 
+  mycolors <- c("blue", "red", "black")
+  names(mycolors) <- c("DOWN", "UP", "NO")
+  
+  ## Now write down the name of genes beside the points...
+  ### Create a new column "delabel", that will contain the name of genes differentially expressed (NA in case they are not)
+  deOutput.table$gene_label <- NA
+  deOutput.table$gene_label[deOutput.table$diffexpressed != "NO"] <- deOutput.table$geneSymbol[deOutput.table$diffexpressed != "NO"]
+  
+  # Finally, organize the labels nicely using the "ggrepel" package and the geom_text_repel() function
+  p = ggplot(data=deOutput.table, aes(x=logFC, y=-log10(adj.P.Val), col=diffexpressed, label=gene_label)) +
+    geom_point() + 
+    theme_minimal() +
+    geom_text_repel() +
+    scale_color_manual(values=mycolors) +
+    geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+    geom_hline(yintercept=-log10(0.05), col="red")
+  
+  p <- p + labs(title = "Diff. Expr. Genes",
+                subtitle = deOutput.table.names[i]) +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5)
+          )
+  
+  plot(p)
+  
+  # Save the deOutput.table with appropriate name to the global environment
+  assign(deOutput.table.names[i], deOutput.table, envir=.GlobalEnv)
+})
+
+#Get gene IDs that are up in proximal and distal colon cancers (for FGSEA analyses)
+## Gene IDs that are up in proximal colon cancers
+tumProximalUp.geneID <- rownames(tumSOI_diffGenes_ProximalVsDistal[tumSOI_diffGenes_ProximalVsDistal$diffexpressed %in% "UP", ])
+tumProximalUp.geneID <- unname(sapply(tumProximalUp.geneID, FUN=function(i){
+  strsplit(i, split="\\|")[[1]][2]
+}))
+
+## Gene IDs that are up in proximal colon cancers
+### Note that the genes that are called "DOWN" in tumSOI_diffGenes_ProximalVsDistal are in principle UP for Distal
+tumDistalUp.geneID <- rownames(tumSOI_diffGenes_ProximalVsDistal[tumSOI_diffGenes_ProximalVsDistal$diffexpressed %in% "DOWN", ])
+tumDistalUp.geneID <- unname(sapply(tumDistalUp.geneID, FUN=function(i){
+  strsplit(i, split="\\|")[[1]][2]
+}))
+
+# Create geneset list containing both tumProximalUp.geneID and tumDistalUp.geneID
+tumProximalDistalDiffExpr.myGeneSetList <- list(tumProximalUp.geneID=tumProximalUp.geneID, tumDistalUp.geneID=tumDistalUp.geneID)
+```
+### Differential expression of CDX2 lower vs. upper 25 percentile across all Proximal and Distal colon cancers
+```{r TCGA-COAD Diff. Expr. CDX2_Low_High_AcrossProximalDistal, echo=FALSE}
+############################################################
+# Differential expression of CDX2 lower vs. upper 25 percentile across Proximal and Distal colon cancer samples 
+############################################################
+# In the following sapply operation, the input (i) should be 1:length(targetsInput.table.names); Note that values for targetsInput.table.names has to be explicitly passed in the function. The output generates the topTables of differentially expressed genes with names as defined in deOutput.table.names
+sapply(c(1), FUN=function(i, targetsInput.table.names = c("rsemExpressionTargets.x.tumSOI"), deOutput.table.names = c("tumSOI_diffGenes_CDX2_Lower25VsUpper75Percentile")){
+  targets.table <- get(targetsInput.table.names[i], envir=.GlobalEnv)
+  dim(targets.table)
+  targets.table <- targets.table[!is.na(targets.table$CDX2_lower25Percentile_upper75Percentile), ]
+  
+  design <- model.matrix(~ 0+factor(targets.table$CDX2_lower25Percentile_upper75Percentile))
+  colnames(design) <- levels(factor(targets.table$CDX2_lower25Percentile_upper75Percentile))
+  x <- rsemExpressionData.nonZero[, targets.table$Sample_Name]
+  dim(x); dim(targets.table)
+  fit <- lmFit(x, design)
+  contrast.matrix <- makeContrasts(CDX2.expr.lower25Percentile - CDX2.expr.upper75Percentile, levels=design)
+  fit2 <- contrasts.fit(fit, contrast.matrix)
+  # Compute moderated t-statistic, F-statistic and log-odds.
+  fit2 <- eBayes(fit2)
+  deOutput.table <- topTable(fit2, coef=1, adjust="BH", number=nrow(x))
+  dim(deOutput.table)
+  #deOutput.table <- deOutput.table[deOutput.table$adj.P.Val <= 0.05, ]
+  dim(deOutput.table)
+  deOutput.table$geneSymbol <- sapply(rownames(deOutput.table), FUN = function(i){
+    strsplit(i, split="\\|")[[1]][1]
+  })
+  
+  #Volcano plot
+  # Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+  # add a column of NAs
+  deOutput.table$diffexpressed <- "NO"
+  # if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+  deOutput.table$diffexpressed[deOutput.table$logFC > 0.6 & deOutput.table$adj.P.Val <= 0.05] <- "UP"
+  # if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+  deOutput.table$diffexpressed[deOutput.table$logFC <= -0.6 & deOutput.table$adj.P.Val <= 0.05] <- "DOWN"
+  
+  ## Change point color 
+  mycolors <- c("blue", "red", "black")
+  names(mycolors) <- c("DOWN", "UP", "NO")
+  
+  ## Now write down the name of genes beside the points...
+  ### Create a new column "delabel", that will contain the name of genes differentially expressed (NA in case they are not)
+  deOutput.table$gene_label <- NA
+  deOutput.table$gene_label[deOutput.table$diffexpressed != "NO"] <- deOutput.table$geneSymbol[deOutput.table$diffexpressed != "NO"]
+  
+  # Finally, organize the labels nicely using the "ggrepel" package and the geom_text_repel() function
+  p = ggplot(data=deOutput.table, aes(x=logFC, y=-log10(adj.P.Val), col=diffexpressed, label=gene_label)) +
+    geom_point() + 
+    theme_minimal() +
+    geom_text_repel() +
+    scale_color_manual(values=mycolors) +
+    geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+    geom_hline(yintercept=-log10(0.05), col="red")
+  
+  p <- p + labs(title = "Diff. Expr. Genes",
+                subtitle = deOutput.table.names[i]) +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5)
+    )
+  
+  plot(p)
+  
+  # Save the deOutput.table with appropriate name to the global environment
+  assign(deOutput.table.names[i], deOutput.table, envir=.GlobalEnv)
+})
+
+#Get gene IDs that are up in CDX2  lower vs. upper 25 percentile coloncancers
+## Gene IDs that are up CDX2_Lower25 Percentile colon cancers
+tumCDX2_Lower25Percentile_Up.geneID <- rownames(tumSOI_diffGenes_CDX2_Lower25VsUpper75Percentile[tumSOI_diffGenes_CDX2_Lower25VsUpper75Percentile$diffexpressed %in% "UP", ])
+tumCDX2_Lower25Percentile_Up.geneID <- unname(sapply(tumCDX2_Lower25Percentile_Up.geneID, FUN=function(i){
+  strsplit(i, split="\\|")[[1]][2]
+}))
+
+## Gene IDs that are up CDX2_Upper75 Percentile colon cancers
+### Note that the genes that are called "DOWN" in tumSOI_diffGenes_CDX2_Lower25VsUpper75Percentile are in principle UP for CDX2_Upper75 Percentile colon cancers
+tumCDX2_Upper75Percentile_Up.geneID <- rownames(tumSOI_diffGenes_CDX2_Lower25VsUpper75Percentile[tumSOI_diffGenes_CDX2_Lower25VsUpper75Percentile$diffexpressed %in% "DOWN", ])
+tumCDX2_Upper75Percentile_Up.geneID <- unname(sapply(tumCDX2_Upper75Percentile_Up.geneID, FUN=function(i){
+  strsplit(i, split="\\|")[[1]][2]
+}))
+
+# Create geneset list containing both tumCDX2_Lower25Percentile_Up.geneID and tumCDX2_Upper75Percentile_Up.geneID
+tumCDX2_LowerUpperDiffExpr.myGeneSetList <- list(tumCDX2_Lower25Percentile_Up.geneID=tumCDX2_Lower25Percentile_Up.geneID, tumCDX2_Upper75Percentile_Up.geneID=tumCDX2_Upper75Percentile_Up.geneID)
+```
+### Differential expression of CDX2 lower vs. upper 25 percentile in Proximal and Distal colon cancers
+```{r TCGA-COAD Diff. Expr. CDX2_Low_High_ForProximalDistal, echo=FALSE}
+############################################################
+# Differential expression of CDX2 lower vs. upper 25 percentile for each of Proximal and Distal colon cancer samples
+############################################################
+# In the following sapply operation, the input (i) should be 1:length(targetsInput.table.names); Note that values for targetsInput.table.names has to be explicitly passed in the function. The output generates the topTables of differentially expressed genes with names as defined in deOutput.table.names
+sapply(c(1:2), FUN=function(i, targetsInput.table.names = c("rsemExpressionTargets.x.tumSOI", "rsemExpressionTargets.x.tumSOI"), deOutput.table.names = c("tumSOI_diffGenes_Proximal_CDX2_Lower25VsUpper75Percentile", "tumSOI_diffGenes_Distal_CDX2_Lower25VsUpper75Percentile"), contrasts = c("CDX2.expr.Proximal.lower25Percentile - CDX2.expr.Proximal.upper75Percentile", "CDX2.expr.Distal.lower25Percentile - CDX2.expr.Distal.upper75Percentile")){
+  targets.table <- get(targetsInput.table.names[i], envir=.GlobalEnv)
+  dim(targets.table)
+  targets.table <- targets.table[!is.na(targets.table$ProxDist_CDX2_lower25Percentile_upper75Percentile), ]
+  
+  design <- model.matrix(~ 0+factor(targets.table$ProxDist_CDX2_lower25Percentile_upper75Percentile))
+  colnames(design) <- levels(factor(targets.table$ProxDist_CDX2_lower25Percentile_upper75Percentile))
+  x <- rsemExpressionData.nonZero[, targets.table$Sample_Name]
+  dim(x); dim(targets.table)
+  fit <- lmFit(x, design)
+  contrast.x <- contrasts[i]
+  contrast.matrix <- makeContrasts(contrasts=contrast.x, levels=design)
+  fit2 <- contrasts.fit(fit, contrast.matrix)
+  # Compute moderated t-statistic, F-statistic and log-odds.
+  fit2 <- eBayes(fit2)
+  deOutput.table <- topTable(fit2, coef=1, adjust="BH", number=nrow(x))
+  dim(deOutput.table)
+  #deOutput.table <- deOutput.table[deOutput.table$adj.P.Val <= 0.05, ]
+  dim(deOutput.table)
+  deOutput.table$geneSymbol <- sapply(rownames(deOutput.table), FUN = function(i){
+    strsplit(i, split="\\|")[[1]][1]
+  })
+  
+  #Volcano plot
+  # Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+  # add a column of NAs
+  deOutput.table$diffexpressed <- "NO"
+  # if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+  deOutput.table$diffexpressed[deOutput.table$logFC > 0.6 & deOutput.table$adj.P.Val <= 0.05] <- "UP"
+  # if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+  deOutput.table$diffexpressed[deOutput.table$logFC <= -0.6 & deOutput.table$adj.P.Val <= 0.05] <- "DOWN"
+  
+  ## Change point color 
+  mycolors <- c("blue", "red", "black")
+  names(mycolors) <- c("DOWN", "UP", "NO")
+  
+  ## Now write down the name of genes beside the points...
+  ### Create a new column "delabel", that will contain the name of genes differentially expressed (NA in case they are not)
+  deOutput.table$gene_label <- NA
+  deOutput.table$gene_label[deOutput.table$diffexpressed != "NO"] <- deOutput.table$geneSymbol[deOutput.table$diffexpressed != "NO"]
+  
+  # Finally, organize the labels nicely using the "ggrepel" package and the geom_text_repel() function
+  p = ggplot(data=deOutput.table, aes(x=logFC, y=-log10(adj.P.Val), col=diffexpressed, label=gene_label)) +
+    geom_point() + 
+    theme_minimal() +
+    geom_text_repel() +
+    scale_color_manual(values=mycolors) +
+    geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+    geom_hline(yintercept=-log10(0.05), col="red")
+  
+  p <- p + labs(title = "Diff. Expr. Genes",
+                subtitle = deOutput.table.names[i]) +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5)
+    )
+  
+  plot(p)
+  
+  # Save the deOutput.table with appropriate name to the global environment
+  assign(deOutput.table.names[i], deOutput.table, envir=.GlobalEnv)
+})
+
+#Get gene IDs that are up in CDX2 lower vs. upper 25 percentile Proximal colon cancers
+{
+  ## Gene IDs that are up CDX2_Lower25 Percentile colon cancers
+  tum_Proximal_CDX2_Lower25Percentile_Up.geneID <- rownames(tumSOI_diffGenes_Proximal_CDX2_Lower25VsUpper75Percentile[tumSOI_diffGenes_Proximal_CDX2_Lower25VsUpper75Percentile$diffexpressed %in% "UP", ])
+  tum_Proximal_CDX2_Lower25Percentile_Up.geneID <- unname(sapply(tum_Proximal_CDX2_Lower25Percentile_Up.geneID, FUN=function(i){
+    strsplit(i, split="\\|")[[1]][2]
+  }))
+  
+  ## Gene IDs that are up CDX2_Upper75 Percentile colon cancers
+  ### Note that the genes that are called "DOWN" in tumSOI_diffGenes_ProxDist_CDX2_Lower25VsUpper75Percentile are in principle UP for CDX2_Upper75 Percentile colon cancers
+  tum_Proximal_CDX2_Upper75Percentile_Up.geneID <- rownames(tumSOI_diffGenes_Proximal_CDX2_Lower25VsUpper75Percentile[tumSOI_diffGenes_Proximal_CDX2_Lower25VsUpper75Percentile$diffexpressed %in% "DOWN", ])
+  tum_Proximal_CDX2_Upper75Percentile_Up.geneID <- unname(sapply(tum_Proximal_CDX2_Upper75Percentile_Up.geneID, FUN=function(i){
+    strsplit(i, split="\\|")[[1]][2]
+  }))
+}
+
+#Get gene IDs that are up in CDX2 lower vs. upper 25 percentile Distal colon cancers
+{
+  ## Gene IDs that are up CDX2_Lower25 Percentile colon cancers
+  tum_Distal_CDX2_Lower25Percentile_Up.geneID <- rownames(tumSOI_diffGenes_Distal_CDX2_Lower25VsUpper75Percentile[tumSOI_diffGenes_Distal_CDX2_Lower25VsUpper75Percentile$diffexpressed %in% "UP", ])
+  tum_Distal_CDX2_Lower25Percentile_Up.geneID <- unname(sapply(tum_Distal_CDX2_Lower25Percentile_Up.geneID, FUN=function(i){
+    strsplit(i, split="\\|")[[1]][2]
+  }))
+  
+  ## Gene IDs that are up CDX2_Upper75 Percentile colon cancers
+  ### Note that the genes that are called "DOWN" in tumSOI_diffGenes_ProxDist_CDX2_Lower25VsUpper75Percentile are in principle UP for CDX2_Upper75 Percentile colon cancers
+  tum_Distal_CDX2_Upper75Percentile_Up.geneID <- rownames(tumSOI_diffGenes_Distal_CDX2_Lower25VsUpper75Percentile[tumSOI_diffGenes_Distal_CDX2_Lower25VsUpper75Percentile$diffexpressed %in% "DOWN", ])
+  tum_Distal_CDX2_Upper75Percentile_Up.geneID <- unname(sapply(tum_Distal_CDX2_Upper75Percentile_Up.geneID, FUN=function(i){
+    strsplit(i, split="\\|")[[1]][2]
+  }))
+}
+
+# Create geneset list containing both tum_Proximal_CDX2_Lower25Percentile_Up.geneID and tum_Proximal_CDX2_Upper75Percentile_Up.geneID
+tum_ProximalAndDistal_CDX2_LowerUpperDiffExpr.myGeneSetList <- list(
+  tum_Proximal_CDX2_Lower25Percentile_Up.geneID=tum_Proximal_CDX2_Lower25Percentile_Up.geneID,
+  tum_Proximal_CDX2_Upper75Percentile_Up.geneID=tum_Proximal_CDX2_Upper75Percentile_Up.geneID,
+  tum_Distal_CDX2_Lower25Percentile_Up.geneID=tum_Distal_CDX2_Lower25Percentile_Up.geneID,
+  tum_Distal_CDX2_Upper75Percentile_Up.geneID=tum_Distal_CDX2_Upper75Percentile_Up.geneID
+  )
+```
+
+### Get genes whose expression is positively correlated with expression of CDX2 in proximal and distal colon cancers
+```{r cdx2CorrelatedGenes Proximal and Distal, echo=FALSE}
+############################################################
+# # Get genes that are positively correlated with expression of CDX2 in proximal colon cancers
+############################################################
+tumSOI_Proximal <- rsemExpressionTargets.x.tumSOI[rsemExpressionTargets.x.tumSOI$locationProximalOrDistal %in% "Proximal", "Sample_Name"]
+
+identical(names(tumSOI_CDX2.expr.Proximal), tumSOI_Proximal)
+
+cdx2CorrelatedGenes_Proximal <- lapply(rownames(rsemExpressionData.nonZero), FUN=function(gene){
+  lmFit=lm(tumSOI_CDX2.expr.Proximal~unlist(rsemExpressionData.nonZero[gene,tumSOI_Proximal]))
+  rSqd=summary(lmFit)$r.squared
+  slope=summary(lmFit)$coefficients[2,1]
+  pVal=summary(lmFit)$coefficients[2,4]
+  pearsonCor=cor(tumSOI_CDX2.expr.Proximal, unlist(rsemExpressionData.nonZero[gene,tumSOI_Proximal]), method = "pearson")
+  return(c(geneName=gene, pearsonCor=pearsonCor, linearFit_slope=slope, rSqd=rSqd, pVal=pVal))
+})
+
+cdx2CorrelatedGenes_Proximal <- as.data.frame(do.call(rbind, cdx2CorrelatedGenes_Proximal))
+rownames(cdx2CorrelatedGenes_Proximal) <- cdx2CorrelatedGenes_Proximal$geneName
+
+cdx2CorrelatedGenes_Proximal <- transform(cdx2CorrelatedGenes_Proximal, geneName=as.character(geneName), pearsonCor=as.numeric(pearsonCor), linearFit_slope=as.numeric(linearFit_slope), rSqd=as.numeric(rSqd), pVal=as.numeric(pVal))
+
+cdx2CorrelatedGenes_Proximal <- cbind.data.frame(cdx2CorrelatedGenes_Proximal, adjPVal=p.adjust(cdx2CorrelatedGenes_Proximal$pVal, method = "BH"))
+
+cdx2PositivelyCorrelatedGenes_Proximal <- cdx2CorrelatedGenes_Proximal[which(cdx2CorrelatedGenes_Proximal$adjPVal <= 0.01 & cdx2CorrelatedGenes_Proximal$pearsonCor > 0.3),]
+
+############################################################
+# Get genes that are positively correlated with expression of CDX2 in distal colon cancers
+############################################################
+tumSOI_Distal <- rsemExpressionTargets.x.tumSOI[rsemExpressionTargets.x.tumSOI$locationProximalOrDistal %in% "Distal", "Sample_Name"]
+
+identical(names(tumSOI_CDX2.expr.Distal), tumSOI_Distal)
+
+cdx2CorrelatedGenes_Distal <- lapply(rownames(rsemExpressionData.nonZero), FUN=function(gene){
+  lmFit=lm(tumSOI_CDX2.expr.Distal~unlist(rsemExpressionData.nonZero[gene,tumSOI_Distal]))
+  rSqd=summary(lmFit)$r.squared
+  slope=summary(lmFit)$coefficients[2,1]
+  pVal=summary(lmFit)$coefficients[2,4]
+  pearsonCor=cor(tumSOI_CDX2.expr.Distal, unlist(rsemExpressionData.nonZero[gene,tumSOI_Distal]), method = "pearson")
+  return(c(geneName=gene, pearsonCor=pearsonCor, linearFit_slope=slope, rSqd=rSqd, pVal=pVal))
+})
+
+cdx2CorrelatedGenes_Distal <- as.data.frame(do.call(rbind, cdx2CorrelatedGenes_Distal))
+rownames(cdx2CorrelatedGenes_Distal) <- cdx2CorrelatedGenes_Distal$geneName
+
+cdx2CorrelatedGenes_Distal <- transform(cdx2CorrelatedGenes_Distal, geneName=as.character(geneName), pearsonCor=as.numeric(pearsonCor), linearFit_slope=as.numeric(linearFit_slope), rSqd=as.numeric(rSqd), pVal=as.numeric(pVal))
+
+cdx2CorrelatedGenes_Distal <- cbind.data.frame(cdx2CorrelatedGenes_Distal, adjPVal=p.adjust(cdx2CorrelatedGenes_Distal$pVal, method = "BH"))
+
+cdx2PositivelyCorrelatedGenes_Distal <- cdx2CorrelatedGenes_Distal[which(cdx2CorrelatedGenes_Distal$adjPVal <= 0.01 & cdx2CorrelatedGenes_Distal$pearsonCor > 0.3),]
+
+############################################################
+# Create geneset list containing both cdx2PositivelyCorrelatedGenes_Proximal.geneID and cdx2PositivelyCorrelatedGenes_Distal.geneID
+############################################################
+cdx2PositivelyCorrelatedGenes_Proximal.geneID <- unname(sapply(cdx2PositivelyCorrelatedGenes_Proximal$geneName, FUN=function(i){
+  strsplit(i, split="\\|")[[1]][2]
+}))
+
+cdx2PositivelyCorrelatedGenes_Distal.geneID <- unname(sapply(cdx2PositivelyCorrelatedGenes_Distal$geneName, FUN=function(i){
+  strsplit(i, split="\\|")[[1]][2]
+}))
+
+cdx2PositivelyCorrelatedGenes.myGeneSetList <- list(
+  cdx2PositivelyCorrelatedGenes_Proximal.geneID=cdx2PositivelyCorrelatedGenes_Proximal.geneID,
+  cdx2PositivelyCorrelatedGenes_Distal.geneID=cdx2PositivelyCorrelatedGenes_Distal.geneID
+)
+```
+
+# FGSEA analyses of the peakAnnoGenesNearPromoter with different colon/cancer cell-type marker sets.
+The gene sets used are:
+1) pangLaoDB epithelial markers
+2) Tubular-Serrated markers and ProximalVsDistal colon cancer markers
+3) Cell type markers from Parikh et al single cell derived clusters
+4) Crypt Top and Bottom GeneSetList markers from  Kosinski et al. (PMID:17881565); Supporting information (SI) Table 1
+
+## FGSEA of colon pangLaoDB epithelial markers
+Overlap the peakAnnoGenesNearPromoter with different gene marker sets.
+```{r GSEA of pangLaoDB epithelial markers, echo=FALSE}
+# Overlap the peakAnnoGenesNearPromoter with different gene marker sets.
+
+# Load the cell type markers from https://panglaodb.se/markers.html?cell_type=%27choose%27 (Go to panglaoDB website and select Datasets and select Cell type markers, and download the tsv file that contains markers data for all cell types)
+
+pangLaoDB_cellMarkers <- fread("..GSEA/Curated_Colon_Signatures/PanglaoDB_markers_27_Mar_2020.tsv.gz")
+#unique(pangLaoDB_cellMarkers$"cell type")
+pangLaoDB_cellMarkers <- pangLaoDB_cellMarkers[pangLaoDB_cellMarkers$"cell type" %in%  c("Cholangiocytes", "Crypt cells", "Enterochromaffin cells", "Enterocytes", "Enteroendocrine cells", "Epithelial cells", "Goblet cells", "Paneth cells", "Tuft cells")]
+pangLaoDB_cellMarkers <- pangLaoDB_cellMarkers[pangLaoDB_cellMarkers$organ == "GI tract"]
+#unique(pangLaoDB_cellMarkers$"cell type")
+
+#Convert human gene symbol -> mouse gene symbol -> moouse Entrez geneID.
+pangLaoDB_cellMarkers.myGeneSetList <- lapply(unique(pangLaoDB_cellMarkers$"cell type"), FUN=function(l){
+  x <- which(pangLaoDB_cellMarkers$"cell type" %in% l)
+  pangLaoDB_cellMarkers$"official gene symbol"[x]
+})
+names(pangLaoDB_cellMarkers.myGeneSetList) <- unique(pangLaoDB_cellMarkers$"cell type")
+
+pangLaoDB_cellMarkers.myGeneSetList <- lapply(pangLaoDB_cellMarkers.myGeneSetList, convertHumanToMouseGeneSymbolList)
+
+pangLaoDB_cellMarkers.myGeneSetList <- lapply(pangLaoDB_cellMarkers.myGeneSetList, FUN=function(l){
+  l$MGI.symbol
+})
+
+pangLaoDB_cellMarkers.myGeneSetList <- lapply(pangLaoDB_cellMarkers.myGeneSetList, FUN = function(l){
+  x <- unique(Diff.Genes_geneID_geneSymbol[Diff.Genes_geneID_geneSymbol$SYMBOL %in% l, "ENTREZID"])
+  return(x)
+}) #Diff.Genes_geneID_geneSymbol contains mapping for mouse gene symbols to Entriz geneIDs.
+
+# Run FGSEA
+NES.x <- lapply(names(Diff.Genes_DF_All_Comparisons), FUN=function(l){
+  
+  Diff.Genes <- Diff.Genes_DF_All_Comparisons[[l]]
+  
+  # Create rank table using the stat (Wald statistic computed dueing DESeq analysis) column
+  rankTable <- data.frame(Diff.Genes$ENTREZID, Diff.Genes$stat)
+  rankTable <- rankTable[order(rankTable$Diff.Genes.stat, decreasing=F), ]
+  #plot(y=rankTable$Diff.Genes.stat, x=c(1:nrow(rankTable)), type="b")
+  
+  # Create vector of ranking metric from rank table
+  rankTable_stat_gsea <- rankTable$Diff.Genes.stat
+  names(rankTable_stat_gsea) <- rankTable$Diff.Genes.ENTREZID
+  rankTable_stat_gsea[1:3]
+  
+  # Run fgsea() with gene set of interest, named vector of ranking metric.
+  set.seed(42)
+  gseaRes <- fgsea(pangLaoDB_cellMarkers.myGeneSetList, rankTable_stat_gsea, minSize = 0, maxSize = Inf, eps=0.0)
+  gseaRes <- gseaRes[order(gseaRes$NES, decreasing = T), ]
+  #gseaRes[1:2, ]
+  
+  # Make a table plot for a bunch of top up and down pathways
+  topPathwaysUp <- gseaRes[ES > 0][head(order(pval), n=length(pangLaoDB_cellMarkers.myGeneSetList)), pathway]
+  topPathwaysDown <- gseaRes[ES < 0][head(order(pval), n=length(pangLaoDB_cellMarkers.myGeneSetList)), pathway]
+  topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+  print(paste("GSEA plot for", l))
+  plot.new()
+  plotGseaTable(pangLaoDB_cellMarkers.myGeneSetList[topPathways], rankTable_stat_gsea, gseaRes, gseaParam=0.5)
+  
+  #Plot enrichment of each geneset
+  plEnr <- lapply(names(pangLaoDB_cellMarkers.myGeneSetList), FUN=function(i){
+    plEnr <- plotEnrichment(pangLaoDB_cellMarkers.myGeneSetList[[i]],
+                            rankTable_stat_gsea) + 
+      labs(title=i, subtitle=l) +
+      theme(plot.title = element_text(hjust = 0.5, size=7),
+            plot.subtitle = element_text(hjust = 0.5, size=7)
+      )
+    return(plEnr)
+  })
+  names(plEnr) <- names(pangLaoDB_cellMarkers.myGeneSetList)
+  do.call(plot_grid, plEnr)
+  
+  return(gseaRes)
+}
+)
+names(NES.x) <- names(Diff.Genes_DF_All_Comparisons)
+NES.x <- lapply(names(NES.x), FUN=function(l){
+  x <- NES.x[[l]][,c("pathway", "NES")]
+  colnames(x)[2] <- paste(l, colnames(x)[2], sep="_")
+  return(x)
+})
+
+NES.x <- Reduce(function(x,y)merge(x,y,by="pathway"), NES.x)
+
+NES.x.mat <- as.matrix(NES.x[, 2:ncol(NES.x)])
+rownames(NES.x.mat) <- NES.x$pathway
+
+#Make separate heatmaps of ProxVsDist comaprison and Cdx2KOVsWT comparisons
+c("ProxVsDist", "Cdx2KOvsWT")
+invisible(sapply(c("ProxVsDist", "Cdx2KOVsWT"), FUN=function(i){
+  NES.x.mat.x <- NES.x.mat[, grep(i, colnames(NES.x.mat))]
+  heatmap.3(NES.x.mat.x, trace="none", scale="none", density.info="none", hclustfun = function(x)hclust(x, method = "complete"), margins=c(10,10), cexRow=0.8, cexCol=0.7, key=T, main=paste0("NES for ", i), col=colorRampPalette(c('blue', 'black', 'yellow'))(15), dendrogram="none", Rowv=F, Colv=F, cex=0.2)
+  })
+)
+rm(NES.x, NES.x.mat)
+```
+
+## FGSEA of Tubular-Serrated markers, ProximalVsDistal and Cdx2_LowerVsHigher colon cancer markers
+```{r GSEA of Tubular-Serrated ProximalVsDistal CDX2LowVsHigh markers, echo=FALSE}
+adenomaTubularSerratedGeneSet.myGeneSetList <- gmtPathways("..GSEA/Curated_Colon_Signatures/Serrated_TubularAdenoma_Signature/Serrated_TubularAdenoma_Signature/adenomaTubularSerratedGeneSet.gmt")
+#names(adenomaTubularSerratedGeneSet.myGeneSetList)
+
+#Convert adenomaTubularSerratedGeneSet.myGeneSetList to mouse gene IDs
+adenomaTubularSerratedGeneSet.myGeneSetList <- lapply(adenomaTubularSerratedGeneSet.myGeneSetList, convertHumanToMouseEntrezGeneIDList)
+
+adenomaTubularSerratedGeneSet.myGeneSetList <- lapply(adenomaTubularSerratedGeneSet.myGeneSetList, FUN=function(l){
+  as.character(l$mouse_entrezgene_id) #convert to character as fgsea requires geneIDs as character vectors.
+})
+
+#Convert tumProximalDistalDiffExpr.myGeneSetList to mouse gene IDs
+tumProximalDistalDiffExpr.myGeneSetList <- lapply(tumProximalDistalDiffExpr.myGeneSetList, convertHumanToMouseEntrezGeneIDList)
+
+tumProximalDistalDiffExpr.myGeneSetList <- lapply(tumProximalDistalDiffExpr.myGeneSetList, FUN=function(l){
+  as.character(l$mouse_entrezgene_id) #convert to character as fgsea requires geneIDs as character vectors.
+})
+
+#Convert tumCDX2_LowerUpperDiffExpr.myGeneSetList to mouse gene IDs
+tumCDX2_LowerUpperDiffExpr.myGeneSetList <- lapply(tumCDX2_LowerUpperDiffExpr.myGeneSetList, convertHumanToMouseEntrezGeneIDList)
+
+tumCDX2_LowerUpperDiffExpr.myGeneSetList <- lapply(tumCDX2_LowerUpperDiffExpr.myGeneSetList, FUN=function(l){
+  as.character(l$mouse_entrezgene_id) #convert to character as fgsea requires geneIDs as character vectors.
+})
+
+#Convert tum_ProximalAndDistal_CDX2_LowerUpperDiffExpr.myGeneSetList to mouse gene IDs
+tum_ProximalAndDistal_CDX2_LowerUpperDiffExpr.myGeneSetList <- lapply(tum_ProximalAndDistal_CDX2_LowerUpperDiffExpr.myGeneSetList, convertHumanToMouseEntrezGeneIDList)
+
+tum_ProximalAndDistal_CDX2_LowerUpperDiffExpr.myGeneSetList <- lapply(tum_ProximalAndDistal_CDX2_LowerUpperDiffExpr.myGeneSetList, FUN=function(l){
+  as.character(l$mouse_entrezgene_id) #convert to character as fgsea requires geneIDs as character vectors.
+})
+
+# Convert cdx2PositivelyCorrelatedGenes.myGeneSetList to mouse gene IDs
+cdx2PositivelyCorrelatedGenes.myGeneSetList <- lapply(cdx2PositivelyCorrelatedGenes.myGeneSetList, convertHumanToMouseEntrezGeneIDList)
+
+cdx2PositivelyCorrelatedGenes.myGeneSetList <- lapply(cdx2PositivelyCorrelatedGenes.myGeneSetList, FUN=function(l){
+  as.character(l$mouse_entrezgene_id) #convert to character as fgsea requires geneIDs as character vectors.
+})
+
+# Create list containing both the tubular/serrated, Proxima/Distal and CDX2Low/High cancer genes
+adenoma_CRC.myGeneSetList <- c(
+  adenomaTubularSerratedGeneSet.myGeneSetList, 
+  tumProximalDistalDiffExpr.myGeneSetList,
+  tumCDX2_LowerUpperDiffExpr.myGeneSetList,
+  tum_ProximalAndDistal_CDX2_LowerUpperDiffExpr.myGeneSetList,
+  cdx2PositivelyCorrelatedGenes.myGeneSetList
+  )
+#names(adenoma_CRC.myGeneSetList)
+
+# Run FGSEA
+NES.x <- lapply(names(Diff.Genes_DF_All_Comparisons), FUN=function(l){
+  
+  Diff.Genes <- Diff.Genes_DF_All_Comparisons[[l]]
+  
+  # Create rank table using the stat (Wald statistic computed dueing DESeq analysis) column
+  rankTable <- data.frame(Diff.Genes$ENTREZID, Diff.Genes$stat)
+  rankTable <- rankTable[order(rankTable$Diff.Genes.stat, decreasing=F), ]
+  #plot(y=rankTable$Diff.Genes.stat, x=c(1:nrow(rankTable)), type="b")
+  
+  # Create vector of ranking metric from rank table
+  rankTable_stat_gsea <- rankTable$Diff.Genes.stat
+  names(rankTable_stat_gsea) <- rankTable$Diff.Genes.ENTREZID
+  rankTable_stat_gsea[1:3]
+  
+  # Run fgsea() with gene set of interest, named vector of ranking metric.
+  set.seed(42)
+  gseaRes <- fgsea(adenoma_CRC.myGeneSetList, rankTable_stat_gsea, minSize = 0, maxSize = Inf, eps=0.0)
+  gseaRes <- gseaRes[order(gseaRes$NES, decreasing = T), ]
+  #gseaRes[1:2, ]
+  
+  # Make a table plot for a bunch of top up and down pathways
+  topPathwaysUp <- gseaRes[ES > 0][head(order(pval), n=length(adenoma_CRC.myGeneSetList)), pathway]
+  topPathwaysDown <- gseaRes[ES < 0][head(order(pval), n=length(adenoma_CRC.myGeneSetList)), pathway]
+  topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+  print(paste("GSEA plot for", l))
+  plot.new()
+  plotGseaTable(adenoma_CRC.myGeneSetList[topPathways], rankTable_stat_gsea, gseaRes, gseaParam=0.5)
+  
+  #Plot enrichment of each geneset
+  plEnr <- lapply(names(adenoma_CRC.myGeneSetList), FUN=function(i){
+    plEnr <- plotEnrichment(adenoma_CRC.myGeneSetList[[i]],
+                            rankTable_stat_gsea) + 
+      labs(title=i, subtitle=l) +
+      theme(plot.title = element_text(hjust = 0.5, size=7),
+            plot.subtitle = element_text(hjust = 0.5, size=7)
+      )
+    return(plEnr)
+  })
+  names(plEnr) <- names(adenoma_CRC.myGeneSetList)
+  do.call(plot_grid, plEnr)
+  
+  return(gseaRes)
+}
+)
+names(NES.x) <- names(Diff.Genes_DF_All_Comparisons)
+NES.x <- lapply(names(NES.x), FUN=function(l){
+  x <- NES.x[[l]][,c("pathway", "NES")]
+  colnames(x)[2] <- paste(l, colnames(x)[2], sep="_")
+  return(x)
+})
+
+NES.x <- Reduce(function(x,y)merge(x,y,by="pathway"), NES.x)
+
+NES.x.mat <- as.matrix(NES.x[, 2:ncol(NES.x)])
+#colnames(NES.x.mat) <- gsub("annotatedRes_", "",  colnames(NES.x.mat))
+rownames(NES.x.mat) <- NES.x$pathway
+
+#Make separate heatmaps of ProxVsDist comaprison and Cdx2KOVsWT comparisons
+c("ProxVsDist", "Cdx2KOvsWT")
+invisible(sapply(c("ProxVsDist", "Cdx2KOVsWT"), FUN=function(i){
+  NES.x.mat.x <- NES.x.mat[, grep(i, colnames(NES.x.mat))]
+  heatmap.3(NES.x.mat.x, trace="none", scale="none", density.info="none", hclustfun = function(x)hclust(x, method = "complete"), margins=c(10,10), cexRow=0.8, cexCol=0.7, key=T, main=paste0("NES for ", i), col=colorRampPalette(c('blue', 'black', 'yellow'))(15), dendrogram="none", Rowv=F, Colv=F, cex=0.2)
+  })
+)
+rm(NES.x, NES.x.mat)
+```
+
+## FGSEA of colon cell-type markers
+The gene sets used are:
+1) Cell type markers from Parikh et al single cell derived clusters
+2) Crypt Top and Bottom GeneSetList markers from  Kosinski et al. (PMID:17881565); Supporting information (SI) Table 1
+```{r GSEA colonMarker, echo=FALSE}
+Parikh_CellCluster.myGeneSetList <- gmtPathways("../GSEA/Curated_Colon_Signatures/Parikh_Single_Cell_Derived_Clusters/Parikh_CellCluster_GeneSetList.gmt")
+names(Parikh_CellCluster.myGeneSetList)
+
+Kosinski_CryptTopAndBottom_GeneSetList <- gmtPathways("../GSEA/Curated_Colon_Signatures/Kosinski_CryptTop_and_CryptBase_Signature/Kosinski_CryptTopAndBottom_GeneSetList.gmt")
+names(Kosinski_CryptTopAndBottom_GeneSetList)
+
+#Combine geneset lists
+colonMarker_GeneSetList <- c(Parikh_CellCluster.myGeneSetList, Kosinski_CryptTopAndBottom_GeneSetList)
+
+names(colonMarker_GeneSetList)
+
+colonMarker_GeneSetList <- lapply(colonMarker_GeneSetList, convertHumanToMouseEntrezGeneIDList)
+
+colonMarker_GeneSetList <- lapply(colonMarker_GeneSetList, FUN=function(l){
+  as.character(l$mouse_entrezgene_id) #convert to character as fgsea seems to require geneIDs as character vectors.
+})
+
+# Run FGSEA
+NES.x <- lapply(names(Diff.Genes_DF_All_Comparisons), FUN=function(l){
+  
+  Diff.Genes <- Diff.Genes_DF_All_Comparisons[[l]]
+  
+  # Create rank table using the stat (Wald statistic computed dueing DESeq analysis) column
+  rankTable <- data.frame(Diff.Genes$ENTREZID, Diff.Genes$stat)
+  rankTable <- rankTable[order(rankTable$Diff.Genes.stat, decreasing=F), ]
+  #plot(y=rankTable$Diff.Genes.stat, x=c(1:nrow(rankTable)), type="b")
+  
+  # Create vector of ranking metric from rank table
+  rankTable_stat_gsea <- rankTable$Diff.Genes.stat
+  names(rankTable_stat_gsea) <- rankTable$Diff.Genes.ENTREZID
+  rankTable_stat_gsea[1:3]
+  
+  # Run fgsea() with gene set of interest, named vector of ranking metric.
+  set.seed(42)
+  gseaRes <- fgsea(colonMarker_GeneSetList, rankTable_stat_gsea, minSize = 0, maxSize = Inf, eps=0.0)
+  gseaRes <- gseaRes[order(gseaRes$NES, decreasing = T), ]
+  #gseaRes[1:2, ]
+  
+  # Make a table plot for a bunch of top up and down pathways
+  topPathwaysUp <- gseaRes[ES > 0][head(order(pval), n=length(colonMarker_GeneSetList)), pathway]
+  topPathwaysDown <- gseaRes[ES < 0][head(order(pval), n=length(colonMarker_GeneSetList)), pathway]
+  topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+  print(paste("GSEA plot for", l))
+  plot.new()
+  plotGseaTable(colonMarker_GeneSetList[topPathways], rankTable_stat_gsea, gseaRes, gseaParam=0.5)
+  
+  #Plot enrichment of each geneset
+  plEnr <- lapply(names(colonMarker_GeneSetList), FUN=function(i){
+    plEnr <- plotEnrichment(colonMarker_GeneSetList[[i]],
+                            rankTable_stat_gsea) + 
+      labs(title=i, subtitle=l) +
+      theme(plot.title = element_text(hjust = 0.5, size=7),
+            plot.subtitle = element_text(hjust = 0.5, size=7)
+      )
+    return(plEnr)
+  })
+  names(plEnr) <- names(colonMarker_GeneSetList)
+  do.call(plot_grid, plEnr)
+  
+  return(gseaRes)
+}
+)
+names(NES.x) <- names(Diff.Genes_DF_All_Comparisons)
+NES.x <- lapply(names(NES.x), FUN=function(l){
+  x <- NES.x[[l]][,c("pathway", "NES")]
+  colnames(x)[2] <- paste(l, colnames(x)[2], sep="_")
+  return(x)
+})
+
+NES.x <- Reduce(function(x,y)merge(x,y,by="pathway"), NES.x)
+
+NES.x.mat <- as.matrix(NES.x[, 2:ncol(NES.x)])
+rownames(NES.x.mat) <- NES.x$pathway
+
+#Make separate heatmaps of ProxVsDist comaprison and Cdx2KOVsWT comparisons
+c("ProxVsDist", "Cdx2KOvsWT")
+invisible(sapply(c("ProxVsDist", "Cdx2KOVsWT"), FUN=function(i){
+  NES.x.mat.x <- NES.x.mat[, grep(i, colnames(NES.x.mat))]
+  heatmap.3(NES.x.mat.x, trace="none", scale="none", density.info="none", hclustfun = function(x)hclust(x, method = "complete"), margins=c(10,10), cexRow=0.8, cexCol=0.7, key=T, main=paste0("NES for ", i), col=colorRampPalette(c('blue', 'black', 'yellow'))(15), dendrogram="none", Rowv=F, Colv=F, cex=0.2)
+  })
+)
+rm(NES.x, NES.x.mat)
+```
+
+# FGSEA of Parikh_CellCluster markers
+GSEA of only the cell type markers from Parikh et al single cell derived clusters. These signatures were also used in the seciton "FGSEA of colon cell-type markers".
+```{r GSEA Parikh_CellCluster markers, echo=FALSE}
+Parikh_CellCluster.myGeneSetList <- gmtPathways("../GSEA/Curated_Colon_Signatures/Parikh_Single_Cell_Derived_Clusters/Parikh_CellCluster_GeneSetList.gmt")
+names(Parikh_CellCluster.myGeneSetList)
+
+Parikh_CellCluster.myGeneSetList <- lapply(Parikh_CellCluster.myGeneSetList, convertHumanToMouseEntrezGeneIDList)
+
+Parikh_CellCluster.myGeneSetList <- lapply(Parikh_CellCluster.myGeneSetList, FUN=function(l){
+  as.character(l$mouse_entrezgene_id) #convert to character as fgsea seems to require geneIDs as character vectors.
+})
+
+# Run FGSEA
+NES.x <- lapply(names(Diff.Genes_DF_All_Comparisons), FUN=function(l){
+  
+  Diff.Genes <- Diff.Genes_DF_All_Comparisons[[l]]
+  
+  # Create rank table using the stat (Wald statistic computed dueing DESeq analysis) column
+  rankTable <- data.frame(Diff.Genes$ENTREZID, Diff.Genes$stat)
+  rankTable <- rankTable[order(rankTable$Diff.Genes.stat, decreasing=F), ]
+  #plot(y=rankTable$Diff.Genes.stat, x=c(1:nrow(rankTable)), type="b")
+  
+  # Create vector of ranking metric from rank table
+  rankTable_stat_gsea <- rankTable$Diff.Genes.stat
+  names(rankTable_stat_gsea) <- rankTable$Diff.Genes.ENTREZID
+  rankTable_stat_gsea[1:3]
+  
+  # Run fgsea() with gene set of interest, named vector of ranking metric.
+  set.seed(42)
+  gseaRes <- fgsea(Parikh_CellCluster.myGeneSetList, rankTable_stat_gsea, minSize = 0, maxSize = Inf, eps=0.0)
+  gseaRes <- gseaRes[order(gseaRes$NES, decreasing = T), ]
+  #gseaRes[1:2, ]
+  
+  # Make a table plot for a bunch of top up and down pathways
+  topPathwaysUp <- gseaRes[ES > 0][head(order(pval), n=length(Parikh_CellCluster.myGeneSetList)), pathway]
+  topPathwaysDown <- gseaRes[ES < 0][head(order(pval), n=length(Parikh_CellCluster.myGeneSetList)), pathway]
+  topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+  print(paste("GSEA plot for", l))
+  plot.new()
+  plotGseaTable(Parikh_CellCluster.myGeneSetList[topPathways], rankTable_stat_gsea, gseaRes, gseaParam=0.5)
+  
+  #Plot enrichment of each geneset
+  plEnr <- lapply(names(Parikh_CellCluster.myGeneSetList), FUN=function(i){
+    plEnr <- plotEnrichment(Parikh_CellCluster.myGeneSetList[[i]],
+                            rankTable_stat_gsea) + 
+      labs(title=i, subtitle=l) +
+      theme(plot.title = element_text(hjust = 0.5, size=7),
+            plot.subtitle = element_text(hjust = 0.5, size=7)
+      )
+    return(plEnr)
+  })
+  names(plEnr) <- names(Parikh_CellCluster.myGeneSetList)
+  do.call(plot_grid, plEnr)
+  
+  return(gseaRes)
+}
+)
+names(NES.x) <- names(Diff.Genes_DF_All_Comparisons)
+NES.x <- lapply(names(NES.x), FUN=function(l){
+  x <- NES.x[[l]][,c("pathway", "NES")]
+  colnames(x)[2] <- paste(l, colnames(x)[2], sep="_")
+  return(x)
+})
+
+NES.x <- Reduce(function(x,y)merge(x,y,by="pathway"), NES.x)
+
+NES.x.mat <- as.matrix(NES.x[, 2:ncol(NES.x)])
+#colnames(NES.x.mat) <- gsub("annotatedRes_", "",  colnames(NES.x.mat))
+rownames(NES.x.mat) <- NES.x$pathway
+
+#Make separate heatmaps of ProxVsDist comaprison and Cdx2KOVsWT comparisons
+c("ProxVsDist", "Cdx2KOvsWT")
+invisible(sapply(c("ProxVsDist", "Cdx2KOVsWT"), FUN=function(i){
+  NES.x.mat.x <- NES.x.mat[, grep(i, colnames(NES.x.mat))]
+  heatmap.3(NES.x.mat.x, trace="none", scale="none", density.info="none", hclustfun = function(x)hclust(x, method = "complete"), margins=c(10,10), cexRow=0.8, cexCol=0.7, key=T, main=paste0("NES for ", i), col=colorRampPalette(c('blue', 'black', 'yellow'))(15), dendrogram="none", Rowv=F, Colv=F, cex=0.2)
+  })
+)
+rm(NES.x, NES.x.mat)
+```
+
+# Overlap of peakAnnoGenesNearPromoter with various colon markers
+```{r Overlap of peakAnnoGenesNearPromoter with gene markers, echo=FALSE}
+allGeneSetList <- c(
+  colonMarker_GeneSetList,
+  adenoma_CRC.myGeneSetList,
+  pangLaoDB_cellMarkers.myGeneSetList)
+names(allGeneSetList)
+
+#Overlap of peaks and annotated genes
+print("Vendiagram showing intersection of peakAnnoGenesNearPromoter")
+vennplot(
+  lapply(peakAnnoGenesNearPromoter, function(l) {l$geneId})
+)
+
+#Plot Intersections and generate list of intersecting geneIDs
+peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneID <- lapply(names(peakAnnoGenesNearPromoter), FUN=function(l){
+  x1 <- peakAnnoGenesNearPromoter[[l]]$geneId
+  xx <- sapply(names(allGeneSetList), FUN=function(i){
+    x <- list(x1, allGeneSetList[[i]])
+    names(x) <- c(l, i)
+    
+    print(paste0("Intersection of peakAnnoGenesNearPromoter ", l, " And ", i))
+    
+    grid.newpage()
+    grid.draw(VennDiagram::venn.diagram(x, filename=NULL, main = paste0("Intersection of ", l, " And ", i), hyper.test=T, total.population = nrow(Diff.Genes_geneID_geneSymbol), lower.tail=F))# p-value of observing the overlapping number of genes or more is also estimated.
+    x <- Reduce(intersect, x)
+    #x <- list(x)
+    #names(x) <- paste0("Intersection of ", l, " And ", i)
+    return(x)
+  })
+  return(xx)
+})
+names(peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneID) <- names(peakAnnoGenesNearPromoter)
+
+#Get gene Symbols of intersections (from peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneID)
+peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols <- lapply(names(peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneID), FUN=function(L){
+  xx <- lapply(peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneID[[L]], FUN=function(l){
+    #head(l)
+    unique(Diff.Genes_geneID_geneSymbol[Diff.Genes_geneID_geneSymbol$ENTREZID %in% l, "SYMBOL"])
+  })
+  xx <- fun.CreateTableFromList(ListOfGenes=xx, names.ListOfGenes=paste0("Intersection_","peakAnnoGenesNearPromoter", L, "_", names(xx)), stringsAsFactors=F)
+  #names(xx)
+  return(xx)
+})
+
+head(peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols)
+
+# Combine all the genes associated with Cdx2-peak at their promoters identified in the proximal and distal colon and get the overalp of these genes with all the colon markers. This is done to identify any and all genes, irrespective of the origin of organoid, that overlap with the markers, which can then be individually analyzed to pick interesting genes.
+All_peakAnnoGenesNearPromoter_geneID <- unique(unname(unlist(lapply(peakAnnoGenesNearPromoter, function(l) {l$geneId}))))
+
+All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols <- lapply(allGeneSetList, FUN=function(l){
+  xx <- intersect(l, All_peakAnnoGenesNearPromoter_geneID)
+  xx <- unique(Diff.Genes_geneID_geneSymbol[Diff.Genes_geneID_geneSymbol$ENTREZID %in% xx, "SYMBOL"])
+  return(xx)
+})
+
+All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols <- fun.CreateTableFromList(
+  ListOfGenes=All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols,
+  names.ListOfGenes=paste0("Intersection_","All_peakAnnoGenesNearPromoter", "_", names(All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols)),
+  stringsAsFactors=F)
+
+write.table(All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols, "All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols.txt", sep="\t", quote=F, row.names=F)
+
+
+x <- All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols[
+  apply(All_peakAnnoGenesNearPromoter_allGeneSetList_Intersections_geneSymbols, 2, FUN=function(column){
+    !all(is.na(column))
+  }), ]
+
+```
+
+```{r SaveData, echo=FALSE}
+save.image("Peak_Calls_Analysis.RData")
+```

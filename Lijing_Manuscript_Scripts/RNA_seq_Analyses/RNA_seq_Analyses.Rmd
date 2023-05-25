@@ -1,0 +1,1154 @@
+---
+title: "Analysis of Salmon Aligned and Quantified RNA-seq Data"
+author:
+- name: Hari Easwaran
+  affiliation: JHU
+package: packageName
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 10
+    fig_height: 7.142857
+abstract: |
+  RNA-seq analysis (Salmon aligned data)
+vignette: |
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Introduction
+The following code normalizes RNA-seq data,  performs gene set analyses, and saves the output as RData.
+
+Main Source for the following work: https://rockefelleruniversity.github.io/RU_RNAseq/presentations/singlepage/RU_RNAseq_p2.html
+https://rockefelleruniversity.github.io/RU_RNAseq/
+Pipeline:
+
+* 1. tximport: Summarize  Salmon aligned transcripts to genes by providing a data.frame of transcripts to their respective gene names. So first read in a single Salmon quantification report to get a table containing all transcript names.
+* 2. Retrieve a transcript names (TXNAME) to gene ids (GENEID) map from  TxDb.Mmusculus.UCSC.mm10.knownGene using select() function from AnnotationDbi
+
+General RNA-seq resources
+
+* RNA-seq Pipeline
+https://rockefelleruniversity.github.io/RU_RNAseq/
+https://hbctraining.github.io/Intro-to-rnaseq-hpc-O2/lessons/02_assessing_quality.html
+
+* Salmon
+https://combine-lab.github.io/salmon/getting_started/#quantifying-samples
+https://hbctraining.github.io/DGE_workshop_salmon/lessons/02_DGE_count_normalization.html
+
+# System Info
+```{r System Info, echo=FALSE}
+R.Version()
+# Bioconductor verison
+print(tools:::.BioC_version_associated_with_R_version())
+```
+
+# Load Required Functions
+Attach required functions (Infi_analysis_master_functions.RData)
+```{r master_functions, include = FALSE}
+# Create required functions
+fun.CreateTableFromList <- function(ListOfGenes, names.ListOfGenes, stringsAsFactors){
+  #ListOfGenes should be list of vectors that has to be converted to data.frame; names.ListOfGenes is the names of the list in the same order, which will be used for teh column names in the output dataframe; stringsAsFactors is "T" or"F".
+  max.length <- max(sapply(ListOfGenes, length))
+  x <- lapply(c(1:length(ListOfGenes)), FUN=function(i){
+    c(ListOfGenes[[i]], rep(NA, max.length-length(ListOfGenes[[i]])))
+  })
+  x.tab <- do.call(cbind, x)
+  x.tab <- data.frame(x.tab, stringsAsFactors=stringsAsFactors, check.names=F)
+  colnames(x.tab) <- names.ListOfGenes
+  return(x.tab)
+}
+
+```
+
+# Libraries Loaded
+Libraries used:
+* (a) tximport
+```{r Load Libraries, include=FALSE}
+# Load libraries
+library(tximport)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene) # load appropriate TxDb package
+library(readr)
+library(DESeq2)
+library(org.Mm.eg.db)
+library(RColorBrewer)
+library(fgsea)
+library(reactome.db)
+
+require(beanplot)
+```
+
+# Set up data for analyses
+First  read in a single Salmon quantification report to get a table containing all transcript names.
+http://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html
+
+Here we are using txdb from TxDb.Mmusculus.UCSC.mm10.knownGene. The txdb object can also be created using the GTF file from ENCODE for gencode (scripts included).
+Note: "GTF stands for Gene transfer format3. It borrows from GFF, but has additional structure that warrants a separate definition and format name."
+https://seandavi.github.io/ITR/transcriptdb.html
+```{r TranscriptToGeneMapping, echo=FALSE}
+samples <- read.table("/Analysis/Sample_Info/Lijing_07092020_Samples.txt", header = TRUE, sep = "\t", fill=T, stringsAsFactors = F, quote="\"") #this is the file that has the file paths to the Salmon aligned files; Edit file path as required
+samples$Group <- factor(samples$Group)
+files <- samples$File
+names(files) <- paste(samples$Samples,"quant.sf", sep="_")
+#files=c("/Analysis/SalmonAlignments/Temp/Y1_TG_trimmed/quant.sf")
+#names(files)=c("Y1")
+temp <- read.delim(files[1])
+head(temp)
+
+# Creating the transcript to gene mapping (tx2gene) file using makeTxDbFromGFF
+## vM25 version
+#https://www.gencodegenes.org/mouse/
+#txdb <- makeTxDbFromGFF("ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M25/gencode.vM25.annotation.gtf.gz") #(Gencode mouse v25 - Comprehensive Genome Annotation, CHR, GTF file, contains the comprehensive gene annotation on the reference chromosomes only)
+
+## vM23 version
+# https://www.gencodegenes.org/mouse/release_M23.html
+#txdb <- makeTxDbFromGFF("ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M23/gencode.vM23.annotation.gtf.gz") #(Gencode mouse v23 - Comprehensive Genome Annotation, CHR, GTF file, contains the comprehensive gene annotation on the reference chromosomes only)
+
+# Alternative to getting the anotation from Gencode above, use the select() function from AnnotationDbi to retrieve a transcript names (TXNAME) to gene ids (GENEID) map from our TxDb.Mmusculus.UCSC.mm10.knownGene object.
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+columns(txdb)
+Tx2Gene <- select(txdb, keys = as.vector(temp[, 1]), 
+    keytype = "TXNAME", columns = c("GENEID", "TXNAME"))
+dim(Tx2Gene)
+Tx2Gene <- Tx2Gene[!is.na(Tx2Gene$GENEID), ]
+dim(Tx2Gene); head(Tx2Gene)
+```
+
+# Running tximport at gene level
+http://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html
+https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#transcript-abundance-files-and-tximport-tximeta
+The result from tximport is a list containing our summarized gene expression estimates
+
+* Abundance - Number of transcripts per million transcripts (TPM).
+* Counts - Estimated counts.
+
+```{r ReadData_tximport, echo=FALSE}
+salmonCounts <- tximport(files, type = "salmon", tx2gene = Tx2Gene)
+names(salmonCounts)
+dim(salmonCounts$abundance); head(salmonCounts$abundance)
+dim(salmonCounts$counts); head(salmonCounts$counts)
+```
+
+# Preliminary Plots
+```{r PreliminaryPlotsRawData, echo=FALSE}
+# create default par
+oldPar <- par(no.readonly = T)
+
+# Choose sample colors (requires package RColorBrewer; check fun.columnColors in Infi_analysis_master_functions.R for deails)
+library(RColorBrewer)
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+set.seed(123)
+colorSample <- sample(col_vector, nrow(samples))
+
+# Density Plots of Log2 counts
+par(mfcol=c(1,2), pty="s")
+plot(density(log2(salmonCounts$counts[,1]), na.rm=T), type="l", col=colorSample[1], main="Density Plot Log2 Counts")
+for(i in 2:ncol(salmonCounts$counts)){
+  lines(density(log2(salmonCounts$counts[,i]), na.rm=T), col=colorSample[i])
+}
+legend("topright", legend=samples$Samples, col=colorSample, lty=1, cex=0.6)
+boxplot(log2(salmonCounts$counts), main="Boxplot of raw Counts", names=samples$Samples, col=colorSample, cex.axis=0.7, las=2)
+par(oldPar)
+
+# Density Plots of Log2 abundance
+par(mfcol=c(1,2), pty="s")
+plot(density(log2(salmonCounts$abundance[,1]), na.rm=T), type="l", col=colorSample[1], main="Density Plot Log2 Abundance")
+for(i in 2:ncol(salmonCounts$abundance)){
+  lines(density(log2(salmonCounts$abundance[,i]), na.rm=T), col=colorSample[i])
+}
+legend("topright", legend=samples$Samples, col=colorSample, lty=1, cex=0.6)
+boxplot(log2(salmonCounts$abundance), main="Boxplot of raw Counts",  names=samples$Samples, col=colorSample, cex.axis=0.7, las=2)
+par(oldPar)
+
+# Density Plots of Log2 length of transcripts
+par(mfcol=c(1,2), pty="s")
+plot(density(log2(salmonCounts$length[,1]), na.rm=T), type="l", col=colorSample[1], main="Density Plot Log2 Length of Transcripts")
+for(i in 2:ncol(salmonCounts$length)){
+  lines(density(log2(salmonCounts$length[,i]), na.rm=T), col=colorSample[i])
+}
+legend("topright", legend=samples$Samples, col=colorSample, lty=1, cex=0.6)
+boxplot(log2(salmonCounts$length), main="Boxplot of Length of Transcripts",  names=samples$Samples, col=colorSample, cex.axis=0.7, las=2)
+par(oldPar)
+
+# Plot of log2 of mean vs. sd across samples
+counts.mean <- apply(as.matrix(log2(salmonCounts$counts + 0.5)), 1, mean)
+counts.sd <- apply(as.matrix(log2(salmonCounts$counts + 0.5)), 1, sd)
+plot(counts.sd~counts.mean, col=rgb(red=0.2, green=0.2, blue=0.2, alpha=0.1, maxColorValue=1), pch=19, cex=0.4, xlab="mean log2(counts across samples + 0.5)", ylab="sd log2(counts + 0.5)", main="SD vs. Mean", cex.main=1, cex.lab=0.8)
+```
+
+
+# DESeq2 from Tximport
+Analyzing the RNA-seq data with DESeq2
+https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#transcript-abundance-files-and-tximport-tximeta
+
+(1) Use the DESeqDataSetFromTximport() to build DESeq2 object from salmon counts. Specify the metadata to colData parameter and specify the column of interest in design parameter as done for DESeqDataSetFromMatrix().
+(2) Specify the contrast parameter, listing the metadata column of interest and the two groups to compare
+(3) Run the DESeq2 workflow on DESeq2 object using the DESeq() function. This function will normalize library sizes, estimate and shrink variance and test data in a single step.
+(4) Sort DESeqResults by pvalue to list most significant changes at top of table
+```{r DESeq2, echo=FALSE}
+# Create dataframe of sample groups as proivded in the dataframe samples and 
+ddsSalmon <- DESeqDataSetFromTximport(salmonCounts, colData = samples, design = ~Group)
+# Build  DESeq2 object from salmon counts
+ddsSalmon <- DESeq(ddsSalmon)
+
+normCounts <- counts(ddsSalmon, normalized = TRUE)
+head(normCounts)
+```
+# Variance Estimation
+In the second step the DEseq() function estimates variances and importantly shrinks variance depending on the mean. This shrinking of variance allows to detect significant changes with low replicate number.
+
+Variance/mean relationship and shrinkage can be reviewed using plotDispEsts() function and DESeq2 object. We can see the adjusted dispersions in blue and original dispersion for genes in black.
+```{r Variance_Estimation, echo=FALSE}
+plotDispEsts(ddsSalmon)
+```
+
+# Get differentially expressed genes.
+Extract contrasts of interest using the results() function.
+Specify the contrast parameter, listing the "samples" column of interest and the two groups to compare.
+Sort resulting DESeqResults by pvalue to list most significant changes at top of table.
+Convert DESeqResults objects into a standard data frame using the as.data.frame function.
+Multiple testing:
+NA in padj:- By default DEseq2 filters out low expressed genes to assist in multiple testing correction. This results in NA values in padj column for low expressed genes. Thus typcially genes with NA padj values should be filtered from the table for later evaluation and functional testing.
+https://www.biostars.org/p/404440/
+https://support.bioconductor.org/p/74097/
+http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#p-values-and-adjusted-p-values
+
+Add a column of our own adjusted p-values for all genes with a pvalue using the p.adjust() function.
+
+Use the org.db packages to retrieve Gene Symbols for our Entrez IDs using the select function
+```{r EntrezIDtoGeneSymbol, include=FALSE}
+library(org.Mm.eg.db)
+```
+
+## Proximal vs. Distal Full Medium
+```{r Diff.Genes.ProxVsDistFM, echo=FALSE}
+levels(samples$Group)
+myResS_ProxVsDist_FM <- results(ddsSalmon, contrast = c("Group", "P_sc_FM", "D_sc_FM"))
+myResS_ProxVsDist_FM <- myResS_ProxVsDist_FM[order(myResS_ProxVsDist_FM$pvalue), ]
+myResS_ProxVsDist_FM[1:3, ]
+myResS_ProxVsDist_FM_DF <- as.data.frame(myResS_ProxVsDist_FM)
+
+# Adjust for multiple testing
+myResS_ProxVsDist_FM_DF$newPadj <- p.adjust(myResS_ProxVsDist_FM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_ProxVsDist_FM_DF$padj))
+myResS_ProxVsDist_FM_DF <- myResS_ProxVsDist_FM_DF[!is.na(myResS_ProxVsDist_FM_DF$padj), ]
+myResS_ProxVsDist_FM_DF <- myResS_ProxVsDist_FM_DF[order(myResS_ProxVsDist_FM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_ProxVsDist_FM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+annotatedRes_ProxVsDist_FM_DF <- merge(eToSym,myResS_ProxVsDist_FM_DF,
+                      by.x=1,
+                      by.y=0,
+                      all.x=FALSE,
+                      all.y=TRUE)
+annotatedRes_ProxVsDist_FM_DF <- annotatedRes_ProxVsDist_FM_DF[order(annotatedRes_ProxVsDist_FM_DF$pvalue),]
+head(annotatedRes_ProxVsDist_FM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_ProxVsDist_FM_DF_sig <- annotatedRes_ProxVsDist_FM_DF[annotatedRes_ProxVsDist_FM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_ProxVsDist_FM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_FM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_ProxVsDist_FM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_FM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Proximal vs. Distal Base Medium
+```{r Diff.Genes.ProxVsDistBM, echo=FALSE}
+levels(samples$Group)
+myResS_ProxVsDist_BM <- results(ddsSalmon, contrast = c("Group", "P_sc_BM", "D_sc_BM"))
+myResS_ProxVsDist_BM <- myResS_ProxVsDist_BM[order(myResS_ProxVsDist_BM$pvalue), ]
+myResS_ProxVsDist_BM[1:3, ]
+myResS_ProxVsDist_BM_DF <- as.data.frame(myResS_ProxVsDist_BM)
+
+# Adjust for multiple testing
+myResS_ProxVsDist_BM_DF$newPadj <- p.adjust(myResS_ProxVsDist_BM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_ProxVsDist_BM_DF$padj))
+myResS_ProxVsDist_BM_DF <- myResS_ProxVsDist_BM_DF[!is.na(myResS_ProxVsDist_BM_DF$padj), ]
+myResS_ProxVsDist_BM_DF <- myResS_ProxVsDist_BM_DF[order(myResS_ProxVsDist_BM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_ProxVsDist_BM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+
+annotatedRes_ProxVsDist_BM_DF <- merge(eToSym,myResS_ProxVsDist_BM_DF,
+                                       by.x=1,
+                                       by.y=0,
+                                       all.x=FALSE,
+                                       all.y=TRUE)
+annotatedRes_ProxVsDist_BM_DF <- annotatedRes_ProxVsDist_BM_DF[order(annotatedRes_ProxVsDist_BM_DF$pvalue),]
+annotatedRes_ProxVsDist_BM_DF[1:3,]
+head(annotatedRes_ProxVsDist_BM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_ProxVsDist_BM_DF_sig <- annotatedRes_ProxVsDist_BM_DF[annotatedRes_ProxVsDist_BM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_ProxVsDist_BM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_BM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_ProxVsDist_BM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_BM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Proximal vs. Distal Cdx2KO Full Medium
+```{r Diff.Genes.ProxVsDist_Cdx2KO_FM, echo=FALSE}
+levels(samples$Group)
+myResS_ProxVsDist_Cdx2KO_FM <- results(ddsSalmon, contrast = c("Group", "P_cdx2_FM", "D_cdx2_FM"))
+myResS_ProxVsDist_Cdx2KO_FM <- myResS_ProxVsDist_Cdx2KO_FM[order(myResS_ProxVsDist_Cdx2KO_FM$pvalue), ]
+myResS_ProxVsDist_Cdx2KO_FM[1:3, ]
+myResS_ProxVsDist_Cdx2KO_FM_DF <- as.data.frame(myResS_ProxVsDist_Cdx2KO_FM)
+
+# Adjust for multiple testing
+myResS_ProxVsDist_Cdx2KO_FM_DF$newPadj <- p.adjust(myResS_ProxVsDist_Cdx2KO_FM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_ProxVsDist_Cdx2KO_FM_DF$padj))
+myResS_ProxVsDist_Cdx2KO_FM_DF <- myResS_ProxVsDist_Cdx2KO_FM_DF[!is.na(myResS_ProxVsDist_Cdx2KO_FM_DF$padj), ]
+myResS_ProxVsDist_Cdx2KO_FM_DF <- myResS_ProxVsDist_Cdx2KO_FM_DF[order(myResS_ProxVsDist_Cdx2KO_FM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_ProxVsDist_Cdx2KO_FM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+
+annotatedRes_ProxVsDist_Cdx2KO_FM_DF <- merge(eToSym,myResS_ProxVsDist_Cdx2KO_FM_DF,
+                                       by.x=1,
+                                       by.y=0,
+                                       all.x=FALSE,
+                                       all.y=TRUE)
+annotatedRes_ProxVsDist_Cdx2KO_FM_DF <- annotatedRes_ProxVsDist_Cdx2KO_FM_DF[order(annotatedRes_ProxVsDist_Cdx2KO_FM_DF$pvalue),]
+annotatedRes_ProxVsDist_Cdx2KO_FM_DF[1:3,]
+head(annotatedRes_ProxVsDist_Cdx2KO_FM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_ProxVsDist_Cdx2KO_FM_DF_sig <- annotatedRes_ProxVsDist_Cdx2KO_FM_DF[annotatedRes_ProxVsDist_Cdx2KO_FM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_ProxVsDist_Cdx2KO_FM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_Cdx2KO_FM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_ProxVsDist_Cdx2KO_FM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_Cdx2KO_FM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Proximal vs. Distal Cdx2KO Base Medium
+```{r Diff.Genes.ProxVsDist_Cdx2KO_BM, echo=FALSE}
+levels(samples$Group)
+myResS_ProxVsDist_Cdx2KO_BM <- results(ddsSalmon, contrast = c("Group", "P_cdx2_BM", "D_cdx2_BM"))
+myResS_ProxVsDist_Cdx2KO_BM <- myResS_ProxVsDist_Cdx2KO_BM[order(myResS_ProxVsDist_Cdx2KO_BM$pvalue), ]
+myResS_ProxVsDist_Cdx2KO_BM[1:3, ]
+myResS_ProxVsDist_Cdx2KO_BM_DF <- as.data.frame(myResS_ProxVsDist_Cdx2KO_BM)
+
+# Adjust for multiple testing
+myResS_ProxVsDist_Cdx2KO_BM_DF$newPadj <- p.adjust(myResS_ProxVsDist_Cdx2KO_BM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_ProxVsDist_Cdx2KO_BM_DF$padj))
+myResS_ProxVsDist_Cdx2KO_BM_DF <- myResS_ProxVsDist_Cdx2KO_BM_DF[!is.na(myResS_ProxVsDist_Cdx2KO_BM_DF$padj), ]
+myResS_ProxVsDist_Cdx2KO_BM_DF <- myResS_ProxVsDist_Cdx2KO_BM_DF[order(myResS_ProxVsDist_Cdx2KO_BM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_ProxVsDist_Cdx2KO_BM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+
+annotatedRes_ProxVsDist_Cdx2KO_BM_DF <- merge(eToSym,myResS_ProxVsDist_Cdx2KO_BM_DF,
+                                       by.x=1,
+                                       by.y=0,
+                                       all.x=FALSE,
+                                       all.y=TRUE)
+annotatedRes_ProxVsDist_Cdx2KO_BM_DF <- annotatedRes_ProxVsDist_Cdx2KO_BM_DF[order(annotatedRes_ProxVsDist_Cdx2KO_BM_DF$pvalue),]
+annotatedRes_ProxVsDist_Cdx2KO_BM_DF[1:3,]
+head(annotatedRes_ProxVsDist_Cdx2KO_BM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_ProxVsDist_Cdx2KO_BM_DF_sig <- annotatedRes_ProxVsDist_Cdx2KO_BM_DF[annotatedRes_ProxVsDist_Cdx2KO_BM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_ProxVsDist_Cdx2KO_BM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_Cdx2KO_BM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_ProxVsDist_Cdx2KO_BM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_ProxVsDist_Cdx2KO_BM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Cdx2KO vs. WT Proximal FM
+```{r Diff.Genes.Prox.Cdx2KOVsWT_FM, echo=FALSE}
+#levels(samples$Group)
+myResS_Prox.Cdx2KOVsWT_FM <- results(ddsSalmon, contrast = c("Group", "P_cdx2_FM", "P_sc_FM"))
+myResS_Prox.Cdx2KOVsWT_FM <- myResS_Prox.Cdx2KOVsWT_FM[order(myResS_Prox.Cdx2KOVsWT_FM$pvalue), ]
+myResS_Prox.Cdx2KOVsWT_FM[1:3, ]
+myResS_Prox.Cdx2KOVsWT_FM_DF <- as.data.frame(myResS_Prox.Cdx2KOVsWT_FM)
+
+# Adjust for multiple testing
+myResS_Prox.Cdx2KOVsWT_FM_DF$newPadj <- p.adjust(myResS_Prox.Cdx2KOVsWT_FM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_Prox.Cdx2KOVsWT_FM_DF$padj))
+myResS_Prox.Cdx2KOVsWT_FM_DF <- myResS_Prox.Cdx2KOVsWT_FM_DF[!is.na(myResS_Prox.Cdx2KOVsWT_FM_DF$padj), ]
+myResS_Prox.Cdx2KOVsWT_FM_DF <- myResS_Prox.Cdx2KOVsWT_FM_DF[order(myResS_Prox.Cdx2KOVsWT_FM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_Prox.Cdx2KOVsWT_FM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+
+annotatedRes_Prox.Cdx2KOVsWT_FM_DF <- merge(eToSym,myResS_Prox.Cdx2KOVsWT_FM_DF,
+                                            by.x=1,
+                                            by.y=0,
+                                            all.x=FALSE,
+                                            all.y=TRUE)
+annotatedRes_Prox.Cdx2KOVsWT_FM_DF <- annotatedRes_Prox.Cdx2KOVsWT_FM_DF[order(annotatedRes_Prox.Cdx2KOVsWT_FM_DF$pvalue),]
+annotatedRes_Prox.Cdx2KOVsWT_FM_DF[1:3,]
+head(annotatedRes_Prox.Cdx2KOVsWT_FM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_Prox.Cdx2KOVsWT_FM_DF_sig <- annotatedRes_Prox.Cdx2KOVsWT_FM_DF[annotatedRes_Prox.Cdx2KOVsWT_FM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_Prox.Cdx2KOVsWT_FM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Prox.Cdx2KOVsWT_FM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_Prox.Cdx2KOVsWT_FM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Prox.Cdx2KOVsWT_FM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Cdx2KO vs. WT Proximal BM
+```{r Diff.Genes.Prox.Cdx2KOVsWT_BM, echo=FALSE}
+#levels(samples$Group)
+myResS_Prox.Cdx2KOVsWT_BM <- results(ddsSalmon, contrast = c("Group", "P_cdx2_BM", "P_sc_BM"))
+myResS_Prox.Cdx2KOVsWT_BM <- myResS_Prox.Cdx2KOVsWT_BM[order(myResS_Prox.Cdx2KOVsWT_BM$pvalue), ]
+myResS_Prox.Cdx2KOVsWT_BM[1:3, ]
+myResS_Prox.Cdx2KOVsWT_BM_DF <- as.data.frame(myResS_Prox.Cdx2KOVsWT_BM)
+
+# Adjust for multiple testing
+myResS_Prox.Cdx2KOVsWT_BM_DF$newPadj <- p.adjust(myResS_Prox.Cdx2KOVsWT_BM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_Prox.Cdx2KOVsWT_BM_DF$padj))
+myResS_Prox.Cdx2KOVsWT_BM_DF <- myResS_Prox.Cdx2KOVsWT_BM_DF[!is.na(myResS_Prox.Cdx2KOVsWT_BM_DF$padj), ]
+myResS_Prox.Cdx2KOVsWT_BM_DF <- myResS_Prox.Cdx2KOVsWT_BM_DF[order(myResS_Prox.Cdx2KOVsWT_BM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_Prox.Cdx2KOVsWT_BM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+
+annotatedRes_Prox.Cdx2KOVsWT_BM_DF <- merge(eToSym,myResS_Prox.Cdx2KOVsWT_BM_DF,
+                                            by.x=1,
+                                            by.y=0,
+                                            all.x=FALSE,
+                                            all.y=TRUE)
+annotatedRes_Prox.Cdx2KOVsWT_BM_DF <- annotatedRes_Prox.Cdx2KOVsWT_BM_DF[order(annotatedRes_Prox.Cdx2KOVsWT_BM_DF$pvalue),]
+annotatedRes_Prox.Cdx2KOVsWT_BM_DF[1:3,]
+head(annotatedRes_Prox.Cdx2KOVsWT_BM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_Prox.Cdx2KOVsWT_BM_DF_sig <- annotatedRes_Prox.Cdx2KOVsWT_BM_DF[annotatedRes_Prox.Cdx2KOVsWT_BM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_Prox.Cdx2KOVsWT_BM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Prox.Cdx2KOVsWT_BM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_Prox.Cdx2KOVsWT_BM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Prox.Cdx2KOVsWT_BM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Cdx2KO vs. WT Distal FM
+```{r Diff.Genes.Dist.Cdx2KOVsWT_FM, echo=FALSE}
+#levels(samples$Group)
+myResS_Dist.Cdx2KOVsWT_FM <- results(ddsSalmon, contrast = c("Group", "D_cdx2_FM", "D_sc_FM"))
+myResS_Dist.Cdx2KOVsWT_FM <- myResS_Dist.Cdx2KOVsWT_FM[order(myResS_Dist.Cdx2KOVsWT_FM$pvalue), ]
+myResS_Dist.Cdx2KOVsWT_FM[1:3, ]
+myResS_Dist.Cdx2KOVsWT_FM_DF <- as.data.frame(myResS_Dist.Cdx2KOVsWT_FM)
+
+# Adjust for multiple testing
+myResS_Dist.Cdx2KOVsWT_FM_DF$newPadj <- p.adjust(myResS_Dist.Cdx2KOVsWT_FM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_Dist.Cdx2KOVsWT_FM_DF$padj))
+myResS_Dist.Cdx2KOVsWT_FM_DF <- myResS_Dist.Cdx2KOVsWT_FM_DF[!is.na(myResS_Dist.Cdx2KOVsWT_FM_DF$padj), ]
+myResS_Dist.Cdx2KOVsWT_FM_DF <- myResS_Dist.Cdx2KOVsWT_FM_DF[order(myResS_Dist.Cdx2KOVsWT_FM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_Dist.Cdx2KOVsWT_FM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+
+annotatedRes_Dist.Cdx2KOVsWT_FM_DF <- merge(eToSym,myResS_Dist.Cdx2KOVsWT_FM_DF,
+                                            by.x=1,
+                                            by.y=0,
+                                            all.x=FALSE,
+                                            all.y=TRUE)
+annotatedRes_Dist.Cdx2KOVsWT_FM_DF <- annotatedRes_Dist.Cdx2KOVsWT_FM_DF[order(annotatedRes_Dist.Cdx2KOVsWT_FM_DF$pvalue),]
+annotatedRes_Dist.Cdx2KOVsWT_FM_DF[1:3,]
+head(annotatedRes_Dist.Cdx2KOVsWT_FM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_Dist.Cdx2KOVsWT_FM_DF_sig <- annotatedRes_Dist.Cdx2KOVsWT_FM_DF[annotatedRes_Dist.Cdx2KOVsWT_FM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_Dist.Cdx2KOVsWT_FM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Dist.Cdx2KOVsWT_FM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_Dist.Cdx2KOVsWT_FM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Dist.Cdx2KOVsWT_FM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Cdx2KO vs. WT Distal BM
+```{r Diff.Genes.Dist.Cdx2KOVsWT_BM, echo=FALSE}
+#levels(samples$Group)
+myResS_Dist.Cdx2KOVsWT_BM <- results(ddsSalmon, contrast = c("Group", "D_cdx2_BM", "D_sc_BM"))
+myResS_Dist.Cdx2KOVsWT_BM <- myResS_Dist.Cdx2KOVsWT_BM[order(myResS_Dist.Cdx2KOVsWT_BM$pvalue), ]
+myResS_Dist.Cdx2KOVsWT_BM[1:3, ]
+myResS_Dist.Cdx2KOVsWT_BM_DF <- as.data.frame(myResS_Dist.Cdx2KOVsWT_BM)
+
+# Adjust for multiple testing
+myResS_Dist.Cdx2KOVsWT_BM_DF$newPadj <- p.adjust(myResS_Dist.Cdx2KOVsWT_BM_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_Dist.Cdx2KOVsWT_BM_DF$padj))
+myResS_Dist.Cdx2KOVsWT_BM_DF <- myResS_Dist.Cdx2KOVsWT_BM_DF[!is.na(myResS_Dist.Cdx2KOVsWT_BM_DF$padj), ]
+myResS_Dist.Cdx2KOVsWT_BM_DF <- myResS_Dist.Cdx2KOVsWT_BM_DF[order(myResS_Dist.Cdx2KOVsWT_BM_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_Dist.Cdx2KOVsWT_BM_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+
+annotatedRes_Dist.Cdx2KOVsWT_BM_DF <- merge(eToSym,myResS_Dist.Cdx2KOVsWT_BM_DF,
+                                            by.x=1,
+                                            by.y=0,
+                                            all.x=FALSE,
+                                            all.y=TRUE)
+annotatedRes_Dist.Cdx2KOVsWT_BM_DF <- annotatedRes_Dist.Cdx2KOVsWT_BM_DF[order(annotatedRes_Dist.Cdx2KOVsWT_BM_DF$pvalue),]
+annotatedRes_Dist.Cdx2KOVsWT_BM_DF[1:3,]
+head(annotatedRes_Dist.Cdx2KOVsWT_BM_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_Dist.Cdx2KOVsWT_BM_DF_sig <- annotatedRes_Dist.Cdx2KOVsWT_BM_DF[annotatedRes_Dist.Cdx2KOVsWT_BM_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_Dist.Cdx2KOVsWT_BM_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Dist.Cdx2KOVsWT_BM_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_Dist.Cdx2KOVsWT_BM_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Dist.Cdx2KOVsWT_BM_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Full Medium Vs. Base Medium Proximal
+```{r Diff.Genes.FMVsBM_Prox, echo=FALSE}
+#levels(samples$Group)
+myResS_FMVsBM_Prox <- results(ddsSalmon, contrast = c("Group", "P_sc_FM", "P_sc_BM"))
+myResS_FMVsBM_Prox <- myResS_FMVsBM_Prox[order(myResS_FMVsBM_Prox$pvalue), ]
+myResS_FMVsBM_Prox[1:3, ]
+myResS_FMVsBM_Prox_DF <- as.data.frame(myResS_FMVsBM_Prox)
+
+# Adjust for multiple testing
+myResS_FMVsBM_Prox_DF$newPadj <- p.adjust(myResS_FMVsBM_Prox_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_FMVsBM_Prox_DF$padj))
+myResS_FMVsBM_Prox_DF <- myResS_FMVsBM_Prox_DF[!is.na(myResS_FMVsBM_Prox_DF$padj), ]
+myResS_FMVsBM_Prox_DF <- myResS_FMVsBM_Prox_DF[order(myResS_FMVsBM_Prox_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_FMVsBM_Prox_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+annotatedRes_FMVsBM_Prox_DF <- merge(eToSym,myResS_FMVsBM_Prox_DF,
+                                       by.x=1,
+                                       by.y=0,
+                                       all.x=FALSE,
+                                       all.y=TRUE)
+annotatedRes_FMVsBM_Prox_DF <- annotatedRes_FMVsBM_Prox_DF[order(annotatedRes_FMVsBM_Prox_DF$pvalue),]
+head(annotatedRes_FMVsBM_Prox_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_FMVsBM_Prox_DF_sig <- annotatedRes_FMVsBM_Prox_DF[annotatedRes_FMVsBM_Prox_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_FMVsBM_Prox_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_FMVsBM_Prox_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_FMVsBM_Prox_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_FMVsBM_Prox_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Full Medium Vs. Base Medium Distal
+```{r Diff.Genes.FMVsBM_Dist, echo=FALSE}
+#levels(samples$Group)
+myResS_FMVsBM_Dist <- results(ddsSalmon, contrast = c("Group", "D_sc_FM", "D_sc_BM"))
+myResS_FMVsBM_Dist <- myResS_FMVsBM_Dist[order(myResS_FMVsBM_Dist$pvalue), ]
+myResS_FMVsBM_Dist[1:3, ]
+myResS_FMVsBM_Dist_DF <- as.data.frame(myResS_FMVsBM_Dist)
+
+# Adjust for multiple testing
+myResS_FMVsBM_Dist_DF$newPadj <- p.adjust(myResS_FMVsBM_Dist_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_FMVsBM_Dist_DF$padj))
+myResS_FMVsBM_Dist_DF <- myResS_FMVsBM_Dist_DF[!is.na(myResS_FMVsBM_Dist_DF$padj), ]
+myResS_FMVsBM_Dist_DF <- myResS_FMVsBM_Dist_DF[order(myResS_FMVsBM_Dist_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_FMVsBM_Dist_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+annotatedRes_FMVsBM_Dist_DF <- merge(eToSym,myResS_FMVsBM_Dist_DF,
+                                       by.x=1,
+                                       by.y=0,
+                                       all.x=FALSE,
+                                       all.y=TRUE)
+annotatedRes_FMVsBM_Dist_DF <- annotatedRes_FMVsBM_Dist_DF[order(annotatedRes_FMVsBM_Dist_DF$pvalue),]
+head(annotatedRes_FMVsBM_Dist_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_FMVsBM_Dist_DF_sig <- annotatedRes_FMVsBM_Dist_DF[annotatedRes_FMVsBM_Dist_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_FMVsBM_Dist_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_FMVsBM_Dist_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_FMVsBM_Dist_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_FMVsBM_Dist_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Full Medium Vs. Base Medium Proximal Cdx2KO
+```{r Diff.Genes.Prox.FMVsBM_Cdx2KO, echo=FALSE}
+#levels(samples$Group)
+myResS_Prox.FMVsBM_Cdx2KO <- results(ddsSalmon, contrast = c("Group", "P_cdx2_FM", "P_cdx2_BM"))
+myResS_Prox.FMVsBM_Cdx2KO <- myResS_Prox.FMVsBM_Cdx2KO[order(myResS_Prox.FMVsBM_Cdx2KO$pvalue), ]
+myResS_Prox.FMVsBM_Cdx2KO[1:3, ]
+myResS_Prox.FMVsBM_Cdx2KO_DF <- as.data.frame(myResS_Prox.FMVsBM_Cdx2KO)
+
+# Adjust for multiple testing
+myResS_Prox.FMVsBM_Cdx2KO_DF$newPadj <- p.adjust(myResS_Prox.FMVsBM_Cdx2KO_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_Prox.FMVsBM_Cdx2KO_DF$padj))
+myResS_Prox.FMVsBM_Cdx2KO_DF <- myResS_Prox.FMVsBM_Cdx2KO_DF[!is.na(myResS_Prox.FMVsBM_Cdx2KO_DF$padj), ]
+myResS_Prox.FMVsBM_Cdx2KO_DF <- myResS_Prox.FMVsBM_Cdx2KO_DF[order(myResS_Prox.FMVsBM_Cdx2KO_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_Prox.FMVsBM_Cdx2KO_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+annotatedRes_Prox.FMVsBM_Cdx2KO_DF <- merge(eToSym,myResS_Prox.FMVsBM_Cdx2KO_DF,
+                                       by.x=1,
+                                       by.y=0,
+                                       all.x=FALSE,
+                                       all.y=TRUE)
+annotatedRes_Prox.FMVsBM_Cdx2KO_DF <- annotatedRes_Prox.FMVsBM_Cdx2KO_DF[order(annotatedRes_Prox.FMVsBM_Cdx2KO_DF$pvalue),]
+head(annotatedRes_Prox.FMVsBM_Cdx2KO_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_Prox.FMVsBM_Cdx2KO_DF_sig <- annotatedRes_Prox.FMVsBM_Cdx2KO_DF[annotatedRes_Prox.FMVsBM_Cdx2KO_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_Prox.FMVsBM_Cdx2KO_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Prox.FMVsBM_Cdx2KO_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_Prox.FMVsBM_Cdx2KO_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Prox.FMVsBM_Cdx2KO_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+## Full Medium Vs. Base Medium Distal Cdx2KO
+```{r Diff.Genes.Dist.FMVsBM_Cdx2KO, echo=FALSE}
+#levels(samples$Group)
+myResS_Dist.FMVsBM_Cdx2KO <- results(ddsSalmon, contrast = c("Group", "D_cdx2_FM", "D_cdx2_BM"))
+myResS_Dist.FMVsBM_Cdx2KO <- myResS_Dist.FMVsBM_Cdx2KO[order(myResS_Dist.FMVsBM_Cdx2KO$pvalue), ]
+myResS_Dist.FMVsBM_Cdx2KO[1:3, ]
+myResS_Dist.FMVsBM_Cdx2KO_DF <- as.data.frame(myResS_Dist.FMVsBM_Cdx2KO)
+
+# Adjust for multiple testing
+myResS_Dist.FMVsBM_Cdx2KO_DF$newPadj <- p.adjust(myResS_Dist.FMVsBM_Cdx2KO_DF$pvalue)
+
+# Remove rows with NA values in padj as these are low expression genes (diff. expr. estimates will be not accurate given our sample sizes are low)
+table(is.na(myResS_Dist.FMVsBM_Cdx2KO_DF$padj))
+myResS_Dist.FMVsBM_Cdx2KO_DF <- myResS_Dist.FMVsBM_Cdx2KO_DF[!is.na(myResS_Dist.FMVsBM_Cdx2KO_DF$padj), ]
+myResS_Dist.FMVsBM_Cdx2KO_DF <- myResS_Dist.FMVsBM_Cdx2KO_DF[order(myResS_Dist.FMVsBM_Cdx2KO_DF$pvalue), ]
+
+# Add gene names to differentially expressed genes.
+eToSym <- select(org.Mm.eg.db,
+                 keys = rownames(myResS_Dist.FMVsBM_Cdx2KO_DF),
+                 keytype = "ENTREZID",
+                 columns="SYMBOL")
+annotatedRes_Dist.FMVsBM_Cdx2KO_DF <- merge(eToSym,myResS_Dist.FMVsBM_Cdx2KO_DF,
+                                            by.x=1,
+                                            by.y=0,
+                                            all.x=FALSE,
+                                            all.y=TRUE)
+annotatedRes_Dist.FMVsBM_Cdx2KO_DF <- annotatedRes_Dist.FMVsBM_Cdx2KO_DF[order(annotatedRes_Dist.FMVsBM_Cdx2KO_DF$pvalue),]
+head(annotatedRes_Dist.FMVsBM_Cdx2KO_DF)
+
+#Write Diff. Expr. data for all genes and sthose with significant DEseq2 adjusted p-values (padj) to output directory
+annotatedRes_Dist.FMVsBM_Cdx2KO_DF_sig <- annotatedRes_Dist.FMVsBM_Cdx2KO_DF[annotatedRes_Dist.FMVsBM_Cdx2KO_DF$padj <= 0.05, ]
+
+write.table(annotatedRes_Dist.FMVsBM_Cdx2KO_DF, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Dist.FMVsBM_Cdx2KO_DF.txt", sep="\t", quote=F, row.names=F)
+
+write.table(annotatedRes_Dist.FMVsBM_Cdx2KO_DF_sig, "/Analysis/Diff_Expr_Analyses_Results/annotatedRes_Dist.FMVsBM_Cdx2KO_DF_sig.txt", sep="\t", quote=F, row.names=F)
+```
+
+
+# Gene Sets Enrichement Analyses
+```{r loadGSA_Libraries, include=FALSE}
+library(GO.db)
+#library(KEGG.db) #this is not available for newwer Biocinductor versions. Try KEGGREST.
+library(reactome.db)
+library(GSEABase)
+library(goseq)
+```
+GSEA and MSigDB analyses
+Mouse to human gene name conversion
+Following MSigDB Human gene sets can be translated to mouse gene names using databases where this conversion has been made. 
+http://bioinf.wehi.edu.au/MSigDB/v7.1/
+* H - hallmark gene sets
+* C1 - positional gene sets
+* C2 - curated gene sets
+* C3 - motif gene sets
+* C4 - computational gene sets
+* C5 - GO gene sets
+* C6 - oncogenic gene sets
+* C7 - immunologic gene sets
+
+Create geneset of interest by obtaining the orhtologous mouse gene sets of Broad MSigDb gene sets. This is later used in chunk GeneSetEnrichment_Method2_Hallmark.
+```{r MsigDb_mouseTohuman, include=FALSE}
+# Get mouse ortologgues of Hallmark gene sets
+Mm.H <- readRDS("/GSEA/Molecular_Signatures_Database_v7.1/hallmark_gene_sets/Mm.h.all.v7.1.entrez.rds")
+class(Mm.H)
+
+#Convert the list to a GeneSetCollection using GSEABase functionality
+myGeneSetList <- list()
+for (i in 1:length(Mm.H)) {
+    myGeneSetList[[i]] <- GeneSet(Mm.H[[i]], setName = names(Mm.H)[i])
+}
+myGeneSetCollection <- GeneSetCollection(myGeneSetList)
+#myGeneSetCollection
+
+# Convert GeneSetCollection to gmt format
+toGmt(myGeneSetCollection, con = "/Analysis/mouse_Hallmarks.gmt")
+```
+
+## Geneset Enrichment: GSA: GO_BP
+Method1
+The first method will test for any association of gene set with a group of interesting genes (differentially expressed genes).
+Protocol:
+
+* 1) Retain only genes which pass the independent filtering step from DESeq2. These are genes with no NA in the DESeq2 padj column. NA values in padj columns were removed in the step while creating the table annotatedRes_*. So all genes in these tables should be used for analyses.
+
+* 2) Use goseq package to identify any functional enrichment in a set of interesting genes (i.e. differentially expressed). The goseq package requires a named vector of 1s or 0s indicating whether a gene is upregulated/downregulated. Thus define a set of genes significantly upregulated in the tables annotatedRes_* (padj <0 05 and log2FC > 0). Note that padj is used instead of newPadj, which was recalculated while generating these tables. Most likely it should not matter. Actaully it will be interesting to test pvalue for gene set enrichment analyses because all differentially expressed genes seems to be more suited for pathway level analyses.
+
+* 3) Correct for gene length bias for geneset enrichment analyses.
+Note: Accroding to description on using getLength (built into pwf function for correcting gne length bias): "The length of a gene is taken to be the median length of all its mature, mRNA, transcripts. It is always preferable to obtain length information directly for the gene ID used to summarize your count data, rather than converting IDs and then using the supplied databases. Even when two genes have a one-to-one mapping between different identifier conventions (which is often not the case), they frequently refer to slightly different regions of the genome with different lengths. It is therefore recommended that the user perform the full analysis in terms of only one gene ID, or manually obtain their own length data for the identifier used to bin reads by gene". We are retaining the TXNAME wich was used by salmon to summarize the counts and use TXNAME to adjust gene length bias. Check https://rdrr.io/bioc/goseq/man/getlength.html
+
+* 4) Functional Enrichment analysis: Use the goseq function to for enrichment of GO or KEGG terms
+
+Also check https://www.bioconductor.org/help/course-materials/2015/SeattleApr2015/E_GeneSetEnrichment.html
+
+Geneset enrichent analsyes of GO Biological Processes
+```{r GeneSetEnrichment_Method1_GO_BP, echo=FALSE}
+x <- list(
+  annotatedRes_ProxVsDist_FM_DF=annotatedRes_ProxVsDist_FM_DF,
+  annotatedRes_ProxVsDist_BM_DF=annotatedRes_ProxVsDist_BM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_FM_DF=annotatedRes_ProxVsDist_Cdx2KO_FM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_BM_DF=annotatedRes_ProxVsDist_Cdx2KO_BM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_FM_DF=annotatedRes_Prox.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_BM_DF=annotatedRes_Prox.Cdx2KOVsWT_BM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_FM_DF=annotatedRes_Dist.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_BM_DF=annotatedRes_Dist.Cdx2KOVsWT_BM_DF,
+  annotatedRes_FMVsBM_Prox_DF=annotatedRes_FMVsBM_Prox_DF,
+  annotatedRes_FMVsBM_Dist_DF=annotatedRes_FMVsBM_Dist_DF,
+  annotatedRes_Prox.FMVsBM_Cdx2KO_DF=annotatedRes_Prox.FMVsBM_Cdx2KO_DF,
+  annotatedRes_Dist.FMVsBM_Cdx2KO_DF=annotatedRes_Dist.FMVsBM_Cdx2KO_DF
+)
+
+lapply(names(x), FUN=function(l){
+  Diff.Genes <- x[[l]]
+  
+  #print(paste(which(names(x) %in% l), "processing",l))
+  
+  # Get upregulated genes.
+  Up_genes <- Diff.Genes$padj < 0.05 & Diff.Genes$log2FoldChange > 
+    0
+  Up_genes <- as.integer(Up_genes)
+  names(Up_genes) <- Diff.Genes$ENTREZID
+  #Up_genes[1:4]
+  #table(Up_genes)
+  
+  # Get downregulated genes.
+  Down_genes <- Diff.Genes$padj < 0.05 & Diff.Genes$log2FoldChange < 
+    0
+  Down_genes <- as.integer(Down_genes)
+  names(Down_genes) <- Diff.Genes$ENTREZID
+  #Down_genes[1:4]
+  #table(Down_genes)
+  
+  # Gene length bias
+  #The goseq package is specifically designed to account for potential length biases in differential expression analysis and so can remove any artefactual enrichment for long and short genes.
+  # The nullp function assess any biases by evaluating the relationship between differential expression and length.
+  #supGenomes <- supportedGenomes()
+  #supGenomes[supGenomes$db %in% "mm*", ]
+  #supportedGeneIDs()
+  # Only one plot for pwf is sufficent as the pot of the Plot The Probability Weighting Function will be same for all genes.
+  pwf_Up_genes = nullp(Up_genes, "mm10", "knownGene", plot.fit = TRUE)
+  mtext(l)
+  
+  pwf_Down_genes = nullp(Down_genes, "mm10", "knownGene", plot.fit = FALSE)
+  
+  #Functional Enrichment analysis
+  #Specify  genome build and ID we are using (here matching our TxDb.UCSC.mm10.knownGene.db) and the categories we wish to test (GO:BP, GO:MF, GO:CC, KEGG).
+  Up_genes_BP <- goseq(pwf_Up_genes, "mm10", "knownGene", test.cats = c("GO:BP"))
+  #dim(Up_genes)
+  #Up_genes[1:10, ]
+  
+  Down_genes_BP <- goseq(pwf_Down_genes, "mm10", "knownGene", test.cats = c("GO:BP"))
+  #dim(Down_genes_BP)
+  #Down_genes_BP[1:10, ]
+  
+  # Correct for multiple hyppthesis and get over and under represented BP categories
+  Up_genes_BP$over_represented_pAdj <- p.adjust(Up_genes_BP$over_represented_pvalue)
+  Up_genes_BP$under_represented_pAdj <- p.adjust(Up_genes_BP$under_represented_pvalue)
+  
+  Up_genes_over_represented_BP <- Up_genes_BP[Up_genes_BP$over_represented_pAdj <= 0.05, ]
+  Up_genes_under_represented_BP <- Up_genes_BP[Up_genes_BP$under_represented_pAdj <= 0.05, ]
+  
+  Down_genes_BP$over_represented_pAdj <- p.adjust(Down_genes_BP$over_represented_pvalue)
+  Down_genes_BP$under_represented_pAdj <- p.adjust(Down_genes_BP$under_represented_pvalue)
+  
+  Down_genes_over_represented_BP <- Down_genes_BP[Down_genes_BP$over_represented_pAdj <= 0.05, ]
+  Down_genes_under_represented_BP <- Down_genes_BP[Down_genes_BP$under_represented_pAdj <= 0.05, ]
+  
+  # Create and write table for GeneSetEnrichment results for output
+  GeneSetEnrichment_results <- list(
+    Up_genes_over_represented_BP=Up_genes_over_represented_BP$term, 
+    Up_genes_under_represented_BP=Up_genes_under_represented_BP$term,
+    Down_genes_over_represented_BP=Down_genes_over_represented_BP$term,
+    Down_genes_under_represented_BP=Down_genes_under_represented_BP$term
+  )
+  
+  names(GeneSetEnrichment_results) <- paste0(l, names(GeneSetEnrichment_results))
+  # create dataframe from list object
+  GeneSetEnrichment_results <- fun.CreateTableFromList(GeneSetEnrichment_results, names.ListOfGenes=names(GeneSetEnrichment_results), stringsAsFactors=F)
+  
+  GSE_fileDir <- paste0(output_dir, "GO_BP_Analyses/", l)
+  GSE_fileName <- paste0(l, "-GSE", "-goBP.txt")
+  GSE_fileName <- file.path(GSE_fileDir, paste0(l, "-GSE", "-goBP.txt"))
+  dir.create(GSE_fileDir, recursive = T)
+  write.table(GeneSetEnrichment_results, GSE_fileName, sep="\t", quote=F, row.names=F)
+  
+  # Plot over and underrepresented genes in the upregulated genes that have adjusted pval <= 0.05
+  # Replace adj pval == 0 with 2e-16
+  par(mar=c(4,13,2,1), mfcol=c(2,1))
+  if(dim(Up_genes_over_represented_BP)[1] > 0){
+    xx <- Up_genes_over_represented_BP
+    xx <- xx[xx$over_represented_pAdj <= 0.05, ]
+    xx$over_represented_pAdj[which(xx$over_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$over_represented_pAdj), names.arg= xx$term, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nUp_genes_over_represented_BP"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Up_genes_over_represented_BP"), cex.main=0.7)}
+  
+  if(dim(Up_genes_under_represented_BP)[1] > 0){
+    xx <- Up_genes_under_represented_BP
+    xx <- xx[xx$under_represented_pAdj <= 0.05, ]
+    xx$under_represented_pAdj[which(xx$under_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$under_represented_pAdj), names.arg= xx$term, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nUp_genes_under_represented_BP"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Up_genes_under_represented_BP"), cex.main=0.7)}
+  par(oldPar)
+  
+  # Plot over and underrepresented genes in the downregulated genes that have adjusted pval <= 0.05
+  # Replace adj pval == 0 with 2e-16
+  par(mar=c(4,13,2,1), mfcol=c(2,1))
+  if(dim(Down_genes_over_represented_BP)[1] > 0){
+    xx <- Down_genes_over_represented_BP
+    xx <- xx[xx$over_represented_pAdj <= 0.05, ]
+    xx$over_represented_pAdj[which(xx$over_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$over_represented_pAdj), names.arg = xx$term, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nDown_genes_over_represented_BP"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Down_genes_over_represented_BP"), cex.main=0.7)}
+  
+  if(dim(Down_genes_under_represented_BP)[1] > 0){
+    xx <- Down_genes_under_represented_BP
+    xx <- xx[xx$under_represented_pAdj <= 0.05, ]
+    xx$under_represented_pAdj[which(xx$under_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$under_represented_pAdj), names.arg = x$term, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nDown_genes_under_represented_BP"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Down_genes_under_represented_BP"), cex.main=0.7)}
+  par(oldPar)
+}
+)
+rm(x)
+```
+
+## Geneset Enrichment: GSA: KEGG
+```{r GeneSetEnrichment_Method1_GO_KEGG, eval=FALSE, include=FALSE}
+x <- list(
+  annotatedRes_ProxVsDist_FM_DF=annotatedRes_ProxVsDist_FM_DF,
+  annotatedRes_ProxVsDist_BM_DF=annotatedRes_ProxVsDist_BM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_FM_DF=annotatedRes_ProxVsDist_Cdx2KO_FM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_BM_DF=annotatedRes_ProxVsDist_Cdx2KO_BM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_FM_DF=annotatedRes_Prox.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_BM_DF=annotatedRes_Prox.Cdx2KOVsWT_BM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_FM_DF=annotatedRes_Dist.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_BM_DF=annotatedRes_Dist.Cdx2KOVsWT_BM_DF,
+  annotatedRes_FMVsBM_Prox_DF=annotatedRes_FMVsBM_Prox_DF,
+  annotatedRes_FMVsBM_Dist_DF=annotatedRes_FMVsBM_Dist_DF,
+  annotatedRes_Prox.FMVsBM_Cdx2KO_DF=annotatedRes_Prox.FMVsBM_Cdx2KO_DF,
+  annotatedRes_Dist.FMVsBM_Cdx2KO_DF=annotatedRes_Dist.FMVsBM_Cdx2KO_DF
+)
+
+lapply(names(x)[1], FUN=function(l){
+  Diff.Genes <- x[[l]]
+  
+  #print(paste(which(names(x) %in% l), "processing",l))
+  
+  # Get upregulated genes.
+  Up_genes <- Diff.Genes$padj < 0.05 & Diff.Genes$log2FoldChange > 
+    0
+  Up_genes <- as.integer(Up_genes)
+  names(Up_genes) <- Diff.Genes$ENTREZID
+  #Up_genes[1:4]
+  #table(Up_genes)
+  
+  # Get downregulated genes.
+  Down_genes <- Diff.Genes$padj < 0.05 & Diff.Genes$log2FoldChange < 
+    0
+  Down_genes <- as.integer(Down_genes)
+  names(Down_genes) <- Diff.Genes$ENTREZID
+  #Down_genes[1:4]
+  #table(Down_genes)
+  
+  # Gene length bias
+  #The goseq package is specifically designed to account for potential length biases in differential expression analysis and so can remove any artefactual enrichment for long and short genes.
+  # The nullp function assess any biases by evaluating the relationship between differential expression and length.
+  #supGenomes <- supportedGenomes()
+  #supGenomes[supGenomes$db %in% "mm*", ]
+  #supportedGeneIDs()
+  # Only one plot for pwf is sufficent as the pot of the Plot The Probability Weighting Function will be same for all genes.
+  pwf_Up_genes = nullp(Up_genes, "mm10", "knownGene", plot.fit = TRUE)
+  mtext(l)
+  
+  pwf_Down_genes = nullp(Down_genes, "mm10", "knownGene", plot.fit = FALSE)
+  
+  #Functional Enrichment analysis
+  #Specify  genome build and ID we are using (here matching our TxDb.UCSC.mm10.knownGene.db) and the categories we wish to test (GO:KEGG, GO:MF, GO:CC, KEGG).
+  Up_genes_KEGG <- goseq(pwf_Up_genes, "mm10", "knownGene", test.cats = c("KEGG"))
+  #dim(Up_genes)
+  #Up_genes[1:10, ]
+  
+  Down_genes_KEGG <- goseq(pwf_Down_genes, "mm10", "knownGene", test.cats = c("KEGG"))
+  #dim(Down_genes_KEGG)
+  #Down_genes_KEGG[1:10, ]
+  
+  # Correct for multiple hyppthesis and get over and under represented KEGG categories
+  Up_genes_KEGG$over_represented_pAdj <- p.adjust(Up_genes_KEGG$over_represented_pvalue)
+  Up_genes_KEGG$under_represented_pAdj <- p.adjust(Up_genes_KEGG$under_represented_pvalue)
+  
+  Up_genes_over_represented_KEGG <- Up_genes_KEGG[Up_genes_KEGG$over_represented_pAdj <= 0.05, ]
+  Up_genes_under_represented_KEGG <- Up_genes_KEGG[Up_genes_KEGG$under_represented_pAdj <= 0.05, ]
+  
+  Down_genes_KEGG$over_represented_pAdj <- p.adjust(Down_genes_KEGG$over_represented_pvalue)
+  Down_genes_KEGG$under_represented_pAdj <- p.adjust(Down_genes_KEGG$under_represented_pvalue)
+  
+  Down_genes_over_represented_KEGG <- Down_genes_KEGG[Down_genes_KEGG$over_represented_pAdj <= 0.05, ]
+  Down_genes_under_represented_KEGG <- Down_genes_KEGG[Down_genes_KEGG$under_represented_pAdj <= 0.05, ]
+  
+  # Create and write table for GeneSetEnrichment results for output
+  GeneSetEnrichment_results <- list(
+    Up_genes_over_represented_KEGG=Up_genes_over_represented_KEGG$category, 
+    Up_genes_under_represented_KEGG=Up_genes_under_represented_KEGG$category,
+    Down_genes_over_represented_KEGG=Down_genes_over_represented_KEGG$category,
+    Down_genes_under_represented_KEGG=Down_genes_under_represented_KEGG$category
+  )
+  
+  names(GeneSetEnrichment_results) <- paste0(l, names(GeneSetEnrichment_results))
+  # create dataframe from list object
+  GeneSetEnrichment_results <- fun.CreateTableFromList(GeneSetEnrichment_results, names.ListOfGenes=names(GeneSetEnrichment_results), stringsAsFactors=F)
+  
+  GSE_fileDir <- paste0(output_dir, "KEGG_Analyses/", l)
+  GSE_fileName <- paste0(l, "-GSE", "-KEGG.txt")
+  GSE_fileName <- file.path(GSE_fileDir, paste0(l, "-GSE", "-KEGG.txt"))
+  dir.create(GSE_fileDir, recursive = T)
+  write.table(GeneSetEnrichment_results, GSE_fileName, sep="\t", quote=F, row.names=F)
+  
+  # Plot over and underrepresented genes in the upregulated genes that have adjusted pval <= 0.05
+  # Replace adj pval == 0 with 2e-16
+  par(mar=c(2,13,2,1), mfcol=c(2,1))
+  if(dim(Up_genes_over_represented_KEGG)[1] > 0){
+    xx <- Up_genes_over_represented_KEGG
+    xx <- xx[xx$over_represented_pAdj <= 0.05, ]
+    xx$over_represented_pAdj[which(xx$over_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$over_represented_pAdj), names.arg= xx$category, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nUp_genes_over_represented_KEGG"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Up_genes_over_represented_KEGG"), cex.main=0.7)}
+  
+  if(dim(Up_genes_under_represented_KEGG)[1] > 0){
+    xx <- Up_genes_under_represented_KEGG
+    xx <- xx[xx$under_represented_pAdj <= 0.05, ]
+    xx$under_represented_pAdj[which(xx$under_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$under_represented_pAdj), names.arg= xx$category, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nUp_genes_under_represented_KEGG"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Up_genes_under_represented_KEGG"), cex.main=0.7)}
+  par(oldPar)
+  
+  # Plot over and underrepresented genes in the downregulated genes that have adjusted pval <= 0.05
+  # Replace adj pval == 0 with 2e-16
+  par(mar=c(2,13,2,1), mfcol=c(2,1))
+  if(dim(Down_genes_over_represented_KEGG)[1] > 0){
+    xx <- Down_genes_over_represented_KEGG
+    xx <- xx[xx$over_represented_pAdj <= 0.05, ]
+    xx$over_represented_pAdj[which(xx$over_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$over_represented_pAdj), names.arg = xx$category, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nDown_genes_over_represented_KEGG"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Down_genes_over_represented_KEGG"), cex.main=0.7)}
+  
+  if(dim(Down_genes_under_represented_KEGG)[1] > 0){
+    xx <- Down_genes_under_represented_KEGG
+    xx <- xx[xx$under_represented_pAdj <= 0.05, ]
+    xx$under_represented_pAdj[which(xx$under_represented_pAdj == 0)] <- 2e-16
+    barplot(-log10(xx$under_represented_pAdj), names.arg = x$category, las=2, cex.names=0.5, horiz=T, main=paste(l, "\nDown_genes_under_represented_KEGG"), xlab="-log10 Adj. p-val", cex.main=0.7, cex.lab=0.8)
+  } else {plot(0~1, main=paste(l, "\nNo significant Down_genes_under_represented_KEGG"), cex.main=0.7)}
+  par(oldPar)
+}
+)
+rm(x)
+```
+
+### Testing gene sets: GSEA
+Method2: The second method will test for any association of gene set with the ranking of all genes (ranked by measure of differential expression). This is the Broad GSEA method.
+Use package fgsea.
+
+## Geneset Enrichment: GSEA: Hallmark
+```{r GeneSetEnrichment_Method2_Hallmark, echo=FALSE}
+library(fgsea)
+x <- list(
+  annotatedRes_ProxVsDist_FM_DF=annotatedRes_ProxVsDist_FM_DF,
+  annotatedRes_ProxVsDist_BM_DF=annotatedRes_ProxVsDist_BM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_FM_DF=annotatedRes_ProxVsDist_Cdx2KO_FM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_BM_DF=annotatedRes_ProxVsDist_Cdx2KO_BM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_FM_DF=annotatedRes_Prox.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_BM_DF=annotatedRes_Prox.Cdx2KOVsWT_BM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_FM_DF=annotatedRes_Dist.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_BM_DF=annotatedRes_Dist.Cdx2KOVsWT_BM_DF
+)
+
+lapply(names(x), FUN=function(l){
+  
+  Diff.Genes <- x[[l]]
+  
+  # Create rank table using the stat (Wald statistic computed dueing DESeq analysis) column
+    rankTable <- data.frame(Diff.Genes$ENTREZID, Diff.Genes$stat)
+  rankTable <- rankTable[order(rankTable$Diff.Genes.stat, decreasing=F), ]
+  #plot(y=rankTable$Diff.Genes.stat, x=c(1:nrow(rankTable)), type="b")
+  
+  # Create vector of ranking metric from rank table
+  rankTable_stat_gsea <- rankTable$Diff.Genes.stat
+  names(rankTable_stat_gsea) <- rankTable$Diff.Genes.ENTREZID
+  rankTable_stat_gsea[1:3]
+  
+  # Load gmt file from the previous created gmt file of mouse translated gene sets corresponding to Hallmark gene sets.
+  mouse_Hallmarks <- gmtPathways("/Analysis/mouse_Hallmarks.gmt")
+  #class(mouse_Hallmarks)
+  #names(mouse_Hallmarks)
+  
+  # Run fgsea() with gene set of interest, named vector of ranking metric, the minimum and maximum sizes of gene sets to be tested (to minSize and maxSize parameters respectively).
+  set.seed(42)
+  gseaRes <- fgsea(mouse_Hallmarks, rankTable_stat_gsea, minSize = 15, maxSize = 500, eps=0.0)
+  gseaRes <- gseaRes[order(gseaRes$NES, decreasing = T), ]
+  #gseaRes[1:2, ]
+  
+  # Make a table plot for a bunch of top up and down pathways
+  topPathwaysUp <- gseaRes[ES > 0][head(order(pval), n=10), pathway]
+  topPathwaysDown <- gseaRes[ES < 0][head(order(pval), n=10), pathway]
+  topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+  print(paste("GSEA-Hallmark plot for", l))
+  plot.new()
+  plotGseaTable(mouse_Hallmarks[topPathways], rankTable_stat_gsea, gseaRes, gseaParam=0.5)
+  
+}
+)
+rm(x)
+```
+
+## Geneset Enrichment: GSEA: Reactome
+```{r GeneSetEnrichment_Method2_Reactome, echo=FALSE}
+x <- list(
+  annotatedRes_ProxVsDist_FM_DF=annotatedRes_ProxVsDist_FM_DF,
+  annotatedRes_ProxVsDist_BM_DF=annotatedRes_ProxVsDist_BM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_FM_DF=annotatedRes_ProxVsDist_Cdx2KO_FM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_BM_DF=annotatedRes_ProxVsDist_Cdx2KO_BM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_FM_DF=annotatedRes_Prox.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_BM_DF=annotatedRes_Prox.Cdx2KOVsWT_BM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_FM_DF=annotatedRes_Dist.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_BM_DF=annotatedRes_Dist.Cdx2KOVsWT_BM_DF
+)
+
+lapply(names(x), FUN=function(l){
+  
+  Diff.Genes <- x[[l]]
+  
+  # Create rank table using the stat (Wald statistic computed dueing DESeq analysis) column
+  rankTable <- data.frame(Diff.Genes$ENTREZID, Diff.Genes$stat)
+  rankTable <- rankTable[order(rankTable$Diff.Genes.stat, decreasing=F), ]
+  #plot(y=rankTable$Diff.Genes.stat, x=c(1:nrow(rankTable)), type="b")
+  
+  # Create vector of ranking metric from rank table
+  rankTable_stat_gsea <- rankTable$Diff.Genes.stat
+  names(rankTable_stat_gsea) <- rankTable$Diff.Genes.ENTREZID
+  rankTable_stat_gsea[1:3]
+  
+  # Obtain pathways from Reactome using reactomePathways (Package reactome.db is required)
+  reactomePthways <- reactomePathways(names(rankTable_stat_gsea))
+  #class(reactomePthways)
+  #names(reactomePthways)
+  
+  # Run fgsea() with gene set of interest, named vector of ranking metric, the minimum and maximum sizes of gene sets to be tested (to minSize and maxSize parameters respectively).
+  set.seed(42)
+  gseaRes <- fgsea(reactomePthways, rankTable_stat_gsea, minSize = 15, maxSize = 500, eps=0.0)
+  gseaRes <- gseaRes[order(gseaRes$NES, decreasing = T), ]
+  #gseaRes[1:2, ]
+  
+  # Make a table plot for a bunch of top up and down pathways
+  topPathwaysUp <- gseaRes[ES > 0][head(order(pval), n=10), pathway]
+  topPathwaysDown <- gseaRes[ES < 0][head(order(pval), n=10), pathway]
+  topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+  print(paste("GSEA-Reactome plot for", l))
+  plot.new()
+  plotGseaTable(reactomePthways[topPathways], rankTable_stat_gsea, gseaRes, gseaParam=0.5)
+}
+)
+rm(x)
+```
+
+# Plots of expression of genes of interest
+```{r echo=FALSE}
+#head(normCounts)
+x <- list(
+  annotatedRes_ProxVsDist_FM_DF=annotatedRes_ProxVsDist_FM_DF,
+  annotatedRes_ProxVsDist_BM_DF=annotatedRes_ProxVsDist_BM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_FM_DF=annotatedRes_ProxVsDist_Cdx2KO_FM_DF,
+  annotatedRes_ProxVsDist_Cdx2KO_BM_DF=annotatedRes_ProxVsDist_Cdx2KO_BM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_FM_DF=annotatedRes_Prox.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Prox.Cdx2KOVsWT_BM_DF=annotatedRes_Prox.Cdx2KOVsWT_BM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_FM_DF=annotatedRes_Dist.Cdx2KOVsWT_FM_DF,
+  annotatedRes_Dist.Cdx2KOVsWT_BM_DF=annotatedRes_Dist.Cdx2KOVsWT_BM_DF
+)
+
+GOI=c("Cdx2", "Olfm4", "Lgr5")
+
+
+log2FoldChange <- sapply(GOI, FUN=function(gene){
+  log2FoldChange.GOI <- lapply(names(x), FUN=function(l){
+    Diff.Genes <- x[[l]]
+    #log2FoldChange <- Diff.Genes[Diff.Genes$SYMBOL %in% GOI, "log2FoldChange"]
+    log2FoldChange <- Diff.Genes[Diff.Genes$SYMBOL %in% gene, "log2FoldChange"]
+    }
+    )
+  return(log2FoldChange.GOI)
+  })
+
+log2FoldChange <- lapply(1:ncol(log2FoldChange), FUN=function(i){
+  unlist(log2FoldChange[,i])
+})
+names(log2FoldChange) <- GOI
+log2FoldChange <- do.call(cbind, log2FoldChange)
+rownames(log2FoldChange) <- names(x)
+
+par(mar=c(4,15,2,1), mfcol=c(2,1))
+for(i in 1:ncol(log2FoldChange)){
+  barplot(log2FoldChange[,i], names.arg=rownames(log2FoldChange), las=2, cex.names=0.7, horiz=T, main=colnames(log2FoldChange)[i])
+}
+par(oldPar)
+```
+
+# Save R  image
+```{r echo=FALSE}
+save.image(paste0(output_dir, RData_filename))
+```
