@@ -1,0 +1,17 @@
+group,number,change,condition,label_1,label
+1,8,up,base,Dist_Cdx2KO-Vs-WT,annotatedRes_Dist.Cdx2KOVsWT_BM_DF.txt
+2,0,up,full,Dist_Cdx2KO-Vs-WT,annotatedRes_Dist.Cdx2KOVsWT_FM_DF.txt
+3,23,up,base,Prox_Cdx2KO-Vs-WT,annotatedRes_Prox.Cdx2KOVsWT_BM_DF.txt
+4,22,up,full,Prox_Cdx2KO-Vs-WT,annotatedRes_Prox.Cdx2KOVsWT_FM_DF.txt
+5,0,up,base,Prox-Vs-Dist,annotatedRes_ProxVsDist_BM_DF.txt
+6,26,up,base,Cdx2KO_Prox-Vs-Dist,annotatedRes_ProxVsDist_Cdx2KO_BM_DF.txt
+7,11,up,full,Cdx2KO_Prox-Vs-Dist,annotatedRes_ProxVsDist_Cdx2KO_FM_DF.txt
+8,4,up,full,Prox-Vs-Dist,annotatedRes_ProxVsDist_FM_DF.txt
+1,-10,down,base,Dist_Cdx2KO-Vs-WT,annotatedRes_Dist.Cdx2KOVsWT_BM_DF.txt
+2,0,down,full,Dist_Cdx2KO-Vs-WT,annotatedRes_Dist.Cdx2KOVsWT_FM_DF.txt
+3,-84,down,base,Prox_Cdx2KO-Vs-WT,annotatedRes_Prox.Cdx2KOVsWT_BM_DF.txt
+4,-36,down,full,Prox_Cdx2KO-Vs-WT,annotatedRes_Prox.Cdx2KOVsWT_FM_DF.txt
+5,-33,down,base,Prox-Vs-Dist,annotatedRes_ProxVsDist_BM_DF.txt
+6,-110,down,base,Cdx2KO_Prox-Vs-Dist,annotatedRes_ProxVsDist_Cdx2KO_BM_DF.txt
+7,-43,down,full,Cdx2KO_Prox-Vs-Dist,annotatedRes_ProxVsDist_Cdx2KO_FM_DF.txt
+8,-2,down,full,Prox-Vs-Dist,annotatedRes_ProxVsDist_FM_DF.txt

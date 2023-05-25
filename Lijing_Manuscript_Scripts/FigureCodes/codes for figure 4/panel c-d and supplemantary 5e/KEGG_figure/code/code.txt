@@ -1,0 +1,249 @@
+wd='C:/Users/86137/OneDrive/Desktop/nature_genetics/figures/codes for figure 4/input_data'
+
+setwd(wd)
+#各组up基因对应的kegg富集分析
+#用BiocManager::install('clusterProfiler')做后续分析会报错。
+#先卸载掉以前下载的版本，再下载如下新的版本。
+#devtools::install_github("YuLab-SMU/clusterProfiler")
+#下载完毕后再重新加载就可以了
+
+#if (!require("BiocManager", quietly = TRUE))
+#install.packages("BiocManager")
+#BiocManager::install('clusterProfiler')
+#BiocManager::install('DOSE')
+#BiocManager::install('topGO')
+#BiocManager::install('pathview')
+#BiocManager::install('org.Mm.eg.db')
+#BiocManager::install('ggplot2')
+#BiocManager::install('stringr')
+
+
+library(DOSE)
+library(topGO)
+library(pathview)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(ggplot2)
+library(stringr)
+keytypes(org.Mm.eg.db) 
+
+temp=list.files(path=wd,pattern="*.txt")
+#列出文件夹中的txt文件。也可以列出其他文件，例如csv文件。
+temp
+length(temp)
+
+data_1=list()
+for(i in 1:length(temp)){
+  data_1[[i]]=read.table(temp[i],header=T,sep='',na.strings = c("NA"))
+}
+
+
+
+
+for(i in 1:length(data_1)){
+  print(i)
+  data=data_1[[i]]
+    data=dplyr::select(data,c(ENTREZID,SYMBOL,log2FoldChange,padj))
+  head(data)
+  
+  
+  up=data[which(data$log2FoldChange >= 1 & data$padj < 0.05),]
+  up$ENTREZID=as.character(up$ENTREZI)
+  
+  kk <- enrichKEGG(gene = up$ENTREZID,
+                   organism = 'mmu', #KEGG可以用人是 'hsa',mouse是mmu
+                   pvalueCutoff = 1)
+  #kk数据的类型比较有意思，例如试下: kk@geneSets[["mmu00010"]]
+  #kk@geneSets[["mmu00010"]]
+  
+  #write.csv(as.data.frame(kk),"KEGG_enrich.csv",row.names =FALSE)
+  write.csv(as.data.frame(kk),file=str_c(as.character(i),'_',substr(temp[i],1,nchar(temp[i])-4), "_up_KEGG_all.csv"),quote=F,row.names = T)
+  #当某列的元素出现‘，’时候，保存的文件格式可能会出现问题。注意核对。
+  #可以根据分析的结果再画图。
+  #这个kk包含了所有算出来的patyway，其中有一部分是没有统计学差异的。
+  data=as.data.frame(kk)
+  data=data[which(data$qvalue<0.05),]
+  nrow(data)
+  write.csv(data,file=str_c(as.character(i),'_',substr(temp[i],1,nchar(temp[i])-4), "_up_KEGG_sig.csv"),quote=F,row.names = T)
+  
+  
+  #我觉得应该用ggpot2画图会更好些。
+  test_1=as.data.frame(kk)
+  test_1=test_1[which(test_1$qvalue<0.05),]
+  test_1$Description
+  
+  test_1$backgroud=str_split_fixed(test_1$BgRatio, "/", 2)[,1]
+  # 注意这个字符串分割函数str_split_fixed，以"/"为分隔符，分成2段。
+  test_1$backgroud=as.numeric(test_1$backgroud)
+  test_1$richFactor=test_1$Count/test_1$backgroud
+  nrow(test_1)
+  kegg=test_1
+  kegg=arrange(kegg, qvalue)
+  kegg=kegg[which(kegg$qvalue < 0.05),]
+  #kegg=arrange(kegg, qvalue)
+  #head(kegg)
+  #kegg[1:10,]
+  
+  kegg$Description
+  nchar(kegg$Description[1])
+  nchar(' - Mus musculus (house mouse)')
+  substr(kegg$Description[1],1,nchar(kegg$Description[1])-nchar(' - Mus musculus (house mouse)')) 
+  
+  
+  nchar(kegg$Description)
+  nchar(' - Mus musculus (house mouse)')
+  substr(kegg$Description,1,nchar(kegg$Description)-nchar(' - Mus musculus (house mouse)')) 
+  
+  kegg$Description_1= substr(kegg$Description,1,nchar(kegg$Description)-nchar(' - Mus musculus (house mouse)')) 
+  
+  
+  #kegg=pathway[1:20,]
+  p=ggplot(kegg,aes(x=richFactor,y=Description_1))
+  p
+  pdf(str_c(as.character(i),'_',substr(temp[i],14,nchar(temp[i])-4), "_up_KEGG.pdf"),8,6)
+  #跟dev.off() 相呼应。可以自动保存图。
+  
+  p=p+geom_point(aes(size=Count,color=qvalue))+scale_color_gradient(low='red',high='green')+
+    labs(title=str_c(substr(temp[i],14,nchar(temp[i])-4), "_up_KEGG"),x='Rich factor',y='',color='qvalue',size='Count')+
+    theme_bw()+
+    theme(axis.text.x=element_text(size=10,angle=0,hjust=0.5))+
+    theme(axis.text.y=element_text(size=15,angle=0,hjust=1))
+  
+  print(p)
+  dev.off() 
+}
+
+
+
+
+
+
+
+
+
+
+
+#####################################
+#分析出具有统计学意义的kegg通路数目
+#上调基因的KEGG富集数目
+a=data.frame(1:8,1:2)
+a$X1.8=0
+a$X1.2=0
+
+
+for(i in 1:length(data_1)){
+  print(i)
+  data=data_1[[i]]
+  data
+  #data=data_1[[1]]
+  data=dplyr::select(data,c(ENTREZID,SYMBOL,log2FoldChange,padj))
+  head(data)
+  
+  
+  up=data[which(data$log2FoldChange >= 1 & data$padj < 0.05),]
+  up$ENTREZID=as.character(up$ENTREZI)
+  
+  kk <- enrichKEGG(gene = up$ENTREZID,
+                   organism = 'mmu', #KEGG可以用人是 'hsa',mouse是mmu
+                   pvalueCutoff = 1)
+  
+  test_1=as.data.frame(kk)
+  test_1$Description
+  
+  test_1$backgroud=str_split_fixed(test_1$BgRatio, "/", 2)[,1]
+  # 注意这个字符串分割函数str_split_fixed，以"/"为分隔符，分成2段。
+  test_1$backgroud=as.numeric(test_1$backgroud)
+  test_1$richFactor=test_1$Count/test_1$backgroud
+  
+  kegg=test_1
+  kegg=arrange(kegg, qvalue)
+  kegg=kegg[which(kegg$qvalue < 0.05),]
+  print(nrow(kegg))
+  a[i,2]=nrow(kegg)
+  a[i,1]=c(i)
+  
+}
+a
+write.csv(a,file="kegg_up_number.csv",quote=F,row.names = T)
+
+
+
+#####################################
+#分析出具有统计学意义的kegg通路数目
+#下调基因的KEGG富集数目
+a=data.frame(1:8,1:2)
+a$X1.8=0
+a$X1.2=0
+a
+
+i=1
+for(i in 1:length(data_1)){
+  print(i)
+  data=data_1[[i]]
+  data
+  #data=data_1[[1]]
+  data=dplyr::select(data,c(ENTREZID,SYMBOL,log2FoldChange,padj))
+  head(data)
+  
+  
+  down=data[which(data$log2FoldChange <= (-1) & data$padj < 0.05),]
+  down$ENTREZID=as.character(down$ENTREZI)
+  
+  kk <- enrichKEGG(gene = down$ENTREZID,
+                   organism = 'mmu', #KEGG可以用人是 'hsa',mouse是mmu
+                   pvalueCutoff = 1)
+  
+  test_1=as.data.frame(kk)
+  test_1$Description
+  
+  test_1$backgroud=str_split_fixed(test_1$BgRatio, "/", 2)[,1]
+  # 注意这个字符串分割函数str_split_fixed，以"/"为分隔符，分成2段。
+  test_1$backgroud=as.numeric(test_1$backgroud)
+  test_1$richFactor=test_1$Count/test_1$backgroud
+  
+  kegg=test_1
+  kegg=arrange(kegg, qvalue)
+  kegg=kegg[which(kegg$qvalue < 0.05),]
+  print(nrow(kegg))
+  a[i,2]=nrow(kegg)
+  a[i,1]=c(i)
+  
+}
+a
+write.csv(a,file="kegg_down_number.csv",quote=F,row.names = T)
+
+
+
+
+
+#################
+#########
+# number_keggpathway
+data_2=read.csv(file="kegg_number.csv", header=T,check.names = FALSE)
+names(data_2)
+data_2$condition_2=str_c(data_2$change,'+',data_2$condition)
+data_2$condition_2
+data_2$label_1=as.factor(data_2$label_1)
+data_2$label_1 <- factor(data_2$label_1, levels = c('Prox-Vs-Dist','Prox_Cdx2KO-Vs-WT','Dist_Cdx2KO-Vs-WT','Cdx2KO_Prox-Vs-Dist'))
+
+figure=ggplot(data_2, aes(x = label_1, y = number+0.11, fill = condition_2)) +
+  geom_bar(stat = "identity",width = 0.9, position = position_dodge(0.9))+
+  geom_text(aes(x=label_1,y=number+0+2*number/abs(number),label=abs(number)),position=position_dodge(width=0.9),color='black')+
+  ggtitle('number_KEGG')+
+  scale_fill_discrete(name='factor_2')+
+  scale_y_continuous(name='number',breaks=seq(-120,40,20),limits=c(-120,40))+
+  theme_bw()  #????????????
+#theme(panel.grid.major=element_line(colour=NA)) #????????????
+figure
+
+pdf('number_kegg.pdf',10,6)
+print(figure)
+dev.off() 
+
+
+#############################
+
+
+
+
+

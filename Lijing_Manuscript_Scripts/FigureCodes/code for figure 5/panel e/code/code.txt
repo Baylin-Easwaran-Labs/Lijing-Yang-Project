@@ -1,0 +1,113 @@
+dir='C:/Users/86137/OneDrive/Desktop/nature_genetics/figures/code for figure 5/panel e'
+setwd(dir)
+getwd()
+list.files()
+load("Genes_with_ChIP-peak_common.RData")
+class(x)
+x$ENTREZID
+unique(is.na(x$ENTREZID))
+
+a=x$ENTREZID
+a=data.frame(a,'label_1')
+a
+
+names(a)=c('gene','gene_set')
+
+gene_set=a
+gene_set
+gene_set=cbind(gene_set,gene_set[,2])
+gene_set$gene
+write.csv(gene_set,file="gene_set.csv",quote=F,row.names = T)
+
+go2gene  <- gene_set[, c(2, 1)]
+go2name  <- gene_set[, c(2, 2)]
+names(go2name)[2]='label_2'
+
+
+###################
+
+temp=list.files(path=dir,pattern="*.txt")
+#列出文件夹中的txt文件。也可以列出其他文件，例如csv文件。
+temp
+length(temp)
+temp
+
+data_1=list()
+for(i in 1:length(temp)){
+  data_1[[i]]=read.table(temp[i],header=T,sep='',na.strings = c("NA"))
+}
+#现在输入数据储存在data_1这个数据框中了。
+data_1
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(dplyr)
+library(org.Mm.eg.db)
+
+for(i in 1:4){
+  DEG_mtx=data_1[[i]]
+  df=dplyr::select(DEG_mtx,c(SYMBOL,log2FoldChange))
+  df_id=bitr(df$SYMBOL,
+             fromType = 'SYMBOL',
+             toType = "ENTREZID",
+             OrgDb = 'org.Mm.eg.db'
+  )
+  #小鼠的是org.Mm.eg.db，人的是org.Hs.eg.db
+  df_all=dplyr::inner_join(df,df_id,by ="SYMBOL")
+  
+  
+  df_all_sort=df_all[order(df_all$log2FoldChange,decreasing = T),]
+  head(df_all_sort)
+  
+  gene_fc=df_all_sort$log2FoldChange
+  head(gene_fc)
+  names(gene_fc)=df_all_sort$ENTREZID
+  head(gene_fc)
+  names(gene_fc)
+  
+  
+  x <- GSEA(
+    gene_fc,
+    TERM2GENE = go2gene,
+    TERM2NAME = go2name,
+    maxGSSize = 800,
+    pvalueCutoff=1)
+  #pvalueCutoff=1 可以输出所有结果，但并不是所有结果有统计学意义。
+  
+  #准备一个给保存文件取名的变量。
+  library(stringr)
+  file_name=temp[i]
+  test=file_name
+  test=substr(test,1,nchar(test)-4)
+  test=substr(test,14,nchar(test))
+  test
+  file_name=test
+  
+  paths='label_1'
+  #paths=names(list)
+  #paths=c('HALLMARK_E2F_TARGETS','HALLMARK_G2M_CHECKPOINT')
+  #paths=c('HALLMARK_WNT_BETA_CATENIN_SIGNALING')
+  #paths=names(x@geneSets)
+  #paths=c("Colonocytes","Enteroendocrines","Goblets","Undifferentiated #1","Undifferentiated #2","Crypt Top Colonocytes")
+  figure=gseaplot2(x,paths,color='firebrick',rel_heights=c(1,.1,.15),title=file_name)
+  figure_1=gseaplot2(x,paths,color='firebrick',pvalue_table=TRUE,rel_heights=c(1,.1,.15),title=file_name)
+  print(file_name)
+  
+  #保存分析的数据，包括NES和pvalue
+  sortKEGG = x[order(x$enrichmentScore,decreasing =T),]
+  head(sortKEGG)
+  dim(sortKEGG)
+  write.csv(sortKEGG,file=str_c(file_name,'_gsea','.csv'),quote=F,row.names = T)
+  #把统计数据保存起来
+  
+  #将分析的图以PDF文件形式保存起来。
+  pdf(str_c(file_name, ".pdf"),10,10)
+  print(figure)
+  print(figure_1)
+  dev.off() 
+  print('finish')
+  print(i)
+  }
+
+

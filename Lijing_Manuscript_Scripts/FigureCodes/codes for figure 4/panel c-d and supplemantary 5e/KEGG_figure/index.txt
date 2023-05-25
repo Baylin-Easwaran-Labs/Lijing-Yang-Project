@@ -1,0 +1,38 @@
+1:
+Distal colon organoid_Cdx2-sgRNA vs Scramble-sgRNA_WENR-minus
+Distal_Cdx2VsScramble_WENR(-)
+
+2:
+Distal colon organoid_Cdx2-sgRNA vs Scramble-sgRNA_WENR-plus
+Distal_Cdx2VsScramble_WENR(+)
+
+
+3:
+Proximal colon organoid_Cdx2-sgRNA vs Scramble-sgRNA_WENR-minus
+Proximal_Cdx2VsScramble_WENR(-)
+
+4:
+Proximal colon organoid_Cdx2-sgRNA vs Scramble-sgRNA_WENR-plus
+Proximal_Cdx2VsScramble_WENR(+)
+
+
+5:
+Prixmal colon organoid vs Distal colon organoid_Scramble-sgRNA_WENR-minus
+ProximalVsDistal_Scramble_WENR(-)
+ProVsDis_Scramble_WENR(-)
+
+
+
+6:
+Prixmal colon organoid vs Distal colon organoid_Cdx2-sgRNA_WENR-minus
+ProVsDis_Cdx2_WENR(-)
+
+
+7:
+Prixmal colon organoid vs Distal colon organoid_Cdx2-sgRNA_WENR-minus
+ProVsDis_Cdx2_WENR(+)
+
+
+8:
+Prixmal colon organoid vs Distal colon organoid_Scramble-sgRNA_WENR-plus
+ProVsDis_Scramble_WENR(+)
