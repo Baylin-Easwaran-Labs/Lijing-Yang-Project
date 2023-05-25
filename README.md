@@ -12,7 +12,6 @@ RNA-seq analyses
 4) Gene set enrichment analysis of the RNA-seq data can be reproduced by running the codes in the folder FigureCodes.
 
 
-
 ChIP-seq analyses
 1) ChIP-seq reads are aligned and peaks are called using ChIPSeq_Alignment_MACSPeak.sh
 2) Differential peak analyses is performed using DiffBind_Analyses.R
