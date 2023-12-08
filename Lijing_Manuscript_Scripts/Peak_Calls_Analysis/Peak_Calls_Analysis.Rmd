@@ -823,6 +823,121 @@ Diff.Genes_DF_All_Comparisons <- list(
 
 Diff.Genes_geneID_geneSymbol <- annotatedRes_ProxVsDist_FM_DF[, c("ENTREZID", "SYMBOL")]
 
+#Plot of overlap of DEGs with common peaks
+## Overlaps the Cdx2 target genes from ChIP-Seq data with the DEGs after Cdx2 sgRNA treatment.
+sapply(c("Prox.Cdx2KOVsWT_FM_DF", "Prox.Cdx2KOVsWT_BM_DF", "Dist.Cdx2KOVsWT_FM_DF", "Dist.Cdx2KOVsWT_BM_DF"), FUN=function(exprDataName){
+  exprData <- Diff.Genes_DF_All_Comparisons[[exprDataName]]
+  A <-  exprData$SYMBOL[exprData$newPadj <= 0.05]
+  B <- Reduce(union, lapply(peakAnnoGenesNearPromoter, FUN=function(l){
+    l$SYMBOL
+  }))
+  C <- exprData$SYMBOL[exprData$newPadj >= 0.05] #not differentially expressed genes
+  
+  mat <- matrix(c(
+    length(intersect(A,B)),
+    length(intersect(C,B)),
+    length(setdiff(A, B)),
+    length(setdiff(C, A))
+  ), nrow=2, byrow=T)
+  colnames(mat) <- c(paste0(exprDataName, "_diffExpr"), paste0(exprDataName, "_non_diffExpr"))
+  rownames(mat) <- c("Peaks", "non_Peaks")
+  print(mat)
+  print(fisher.test(mat, alternative="t")$p.value)
+  vennplot(list(diffGenes_Cdx2KOVsWT_FM=A,
+                commonPromoterPeaks=B))
+  
+  # Pretty Venn diagram using ggVennDiagram (https://venn.bio-spring.top/using-ggvenndiagram)
+  gene.list <- list(A, B)
+  names(gene.list) <- c(exprDataName, "commonPromoterPeaks")
+  venn <- Venn(gene.list)
+  venn.data <- process_data(venn)
+  p <- ggplot() +
+    # 1. region count layer
+    geom_sf(aes(fill = count), data = venn_region(venn.data)) +
+    # 2. set edge layer
+    geom_sf(color="grey", size = 4, data = venn_setedge(venn.data), show.legend = FALSE) +
+    # 3. set label layer
+    geom_sf_text(aes(label = name), data = venn_setlabel(venn.data)) +
+    # 4. region label layer
+    geom_sf_label(aes(label = count), size=12, label.size = 0.25, data = venn_region(venn.data)) +
+    # 5. set region color
+    scale_fill_distiller(palette = "Greys") +
+    # 5. set additional labels
+    labs(title = paste0("Intersection of ", exprDataName, " and TSS-Peaks"),
+         subtitle = paste0("fishers pval=", fisher.test(mat, alternative="t")$p.value),
+         caption = Sys.Date()) +
+    theme_void()
+  plot(p)
+  
+  # Plot the differentially expressed genes that are bound by Cdx2 at their TSS
+  plot(-log10(exprData$pvalue) ~ exprData$log2FoldChange, cex=0.7, main=paste(exprDataName, " genes that are commonly bound by Cdx2 at their TSS in red"), sub="xcxc")
+  points(-log10(exprData$pvalue)[which(exprData$SYMBOL %in% intersect(A, B))] ~ exprData$log2FoldChange[which(exprData$SYMBOL %in% intersect(A, B))], col="red", pch=19, cex=0.7)
+  
+  rm(A,B,C,mat,venn,venn.data)
+})
+
+#Plot of overlap of DEGs with peaks in proximal and distal organoids grown in full or base media
+## Function for creating such plots iteratively
+fun.plotOverlapDEG_TSS_Peaks <- function(i){#i can take only values 1 to 4
+  #This function gets the proximal and distal Cdx2 vs. WT DEGs in full abd base medium abd overlaps these DEGs with proximal and distal Cdx2 TSS-peaks in the corresponding proxmal adn distal organoids grown in full and base, respectively. The index i picks these corresponding samples from the objects exprDataName and TSS_Peaks created within this function.
+  
+  exprDataName <- c("Prox.Cdx2KOVsWT_FM_DF", "Prox.Cdx2KOVsWT_BM_DF", "Dist.Cdx2KOVsWT_FM_DF", "Dist.Cdx2KOVsWT_BM_DF")
+  TSS_PeaksName <- c("ProxFull", "ProxBase", "DistFull", "DistBase")
+  
+  exprDataName <- exprDataName[i]
+  TSS_PeaksName <- TSS_PeaksName[i]
+  
+  exprData <- Diff.Genes_DF_All_Comparisons[[exprDataName]]
+  A <-  exprData$SYMBOL[exprData$newPadj <= 0.05]
+  B <-  peakAnnoGenesNearPromoter[[TSS_PeaksName]]$SYMBOL
+  C <- exprData$SYMBOL[exprData$newPadj >= 0.05] #not differentially expressed genes
+  
+  mat <- matrix(c(
+    length(intersect(A,B)),
+    length(intersect(C,B)),
+    length(setdiff(A, B)),
+    length(setdiff(C, A))
+  ), nrow=2, byrow=T)
+  colnames(mat) <- c(paste0(exprDataName, "_diffExpr"), paste0(exprDataName, "_non_diffExpr"))
+  rownames(mat) <- c(
+    paste0(TSS_PeaksName, "-TSS-Peaks"), 
+    paste0("non", TSS_PeaksName, "-TSS-Peaks"))
+  print(mat)
+  print(fisher.test(mat, alternative="t")$p.value)
+  vennplot(list(diffGenes_Cdx2KOVsWT_FM=A,
+                commonPromoterPeaks=B))
+  
+  # Pretty Venn diagram using ggVennDiagram (https://venn.bio-spring.top/using-ggvenndiagram)
+  gene.list <- list(A, B)
+  names(gene.list) <- c(exprDataName, paste0(TSS_PeaksName, "-Peaks"))
+  venn <- Venn(gene.list)
+  venn.data <- process_data(venn)
+  p <- ggplot() +
+    # 1. region count layer
+    geom_sf(aes(fill = count), data = venn_region(venn.data)) +
+    # 2. set edge layer
+    geom_sf(color="grey", size = 4, data = venn_setedge(venn.data), show.legend = FALSE) +
+    # 3. set label layer
+    geom_sf_text(aes(label = name), data = venn_setlabel(venn.data)) +
+    # 4. region label layer
+    geom_sf_label(aes(label = count), size=12, label.size = 0.25, data = venn_region(venn.data)) +
+    # 5. set region color
+    scale_fill_distiller(palette = "Greys") +
+    # 5. set additional labels
+    labs(title = paste0("Intersection of ", exprDataName, " and ", TSS_PeaksName),
+         subtitle = paste0("fishers pval=", fisher.test(mat, alternative="t")$p.value),
+         caption = Sys.Date()) +
+    theme_void()
+  plot(p)
+  
+  # Plot the differentially expressed genes that are bound by Cdx2 at their TSS
+  plot(-log10(exprData$pvalue) ~ exprData$log2FoldChange, cex=0.7, main=paste(exprDataName, " DEGs with Cdx2-targeted genes in", TSS_PeaksName, "in red"))
+  points(-log10(exprData$pvalue)[which(exprData$SYMBOL %in% intersect(A, B))] ~ exprData$log2FoldChange[which(exprData$SYMBOL %in% intersect(A, B))], col="red", pch=19, cex=0.7)
+  
+  rm(A,B,C,mat,venn,venn.data)
+}
+sapply(c(1:4), fun.plotOverlapDEG_TSS_Peaks)
+
 ```
 
 Test for any association of peakAnnoGenesNearPromoter gene set with the ranking of all genes (ranked by measure of differential expression).
